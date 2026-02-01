@@ -86,7 +86,7 @@ WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://chatbotify.onrender.com{WEBHOOK_PATH}"
 
 async def on_startup(dp):
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(token=TOKEN)
     await bot.set_webhook(WEBHOOK_URL)
     print("✅ Webhook activated!")
 
