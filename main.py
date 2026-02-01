@@ -82,7 +82,7 @@ if __name__ == '__main__':
 import os
 from aiogram import executor
 
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://chatbotify.onrender.com{WEBHOOK_PATH}"
 
 async def on_startup(dp):
