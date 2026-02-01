@@ -29,7 +29,6 @@ class BookingForm(StatesGroup):
 async def start(message: types.Message):
     await message.reply("👋 **CafeBotify** ☕\nВыберите:", reply_markup=MAIN_MENU, parse_mode='Markdown')
 
-# БРОНЬ: ШАГ 1
 @dp.message_handler(Text(equals='📋 Бронь столика'))
 async def book_start(message: types.Message, state: FSMContext):
     await message.reply(
@@ -40,7 +39,6 @@ async def book_start(message: types.Message, state: FSMContext):
     )
     await BookingForm.waiting_datetime.set()
 
-# БРОНЬ: ШАГ 2 - ПАРСЕР ДАТЫ
 @dp.message_handler(state=BookingForm.waiting_datetime)
 async def parse_datetime(message: types.Message, state: FSMContext):
     text = message.text.strip()
@@ -78,7 +76,6 @@ async def parse_datetime(message: types.Message, state: FSMContext):
     except:
         await message.reply("❌ **15.02 19:00**", parse_mode='Markdown')
 
-# БРОНЬ: ШАГ 3 - ЛЮДИ
 @dp.message_handler(state=BookingForm.waiting_people)
 async def finish_booking(message: types.Message, state: FSMContext):
     if message.text == '❌ Отмена':
@@ -96,7 +93,31 @@ async def finish_booking(message: types.Message, state: FSMContext):
         f"👥 {people} чел\n"
         f"📞 8(861)123-45-67",
         reply_markup=MAIN_MENU,
-        parse_mo
+        parse_mode='Markdown'
+    )
+    await state.finish()
 
+# МЕНЮ КНОПКИ
+@dp.message_handler(lambda m: m.text in ['☕ Кофе 200₽', '🍵 Чай 150₽'])
+async def menu_buttons(message: types.Message):
+    await message.reply("✅ **Заказ принят!** ☕", reply_markup=MAIN_MENU, parse_mode='Markdown')
 
+# ЛОВИМ ВСЕ ОСТАЛЬНОЕ
+@dp.message_handler()
+async def catch_all(message: types.Message):
+    await message.reply("☕ **Меню:** кофе/чай/пирог\n📋 Бронь", reply_markup=MAIN_MENU, parse_mode='Markdown')
+
+# WEBHOOK
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
+
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL)
+    print("✅ CafeBotify LIVE!")
+
+if __name__ == '__main__':
+    executor.start_webhook(
+        dp, WEBHOOK_PATH, on_startup=on_startup,
+        host="0.0.0.0", port=int(os.getenv('PORT', 10000))
+    )
 
