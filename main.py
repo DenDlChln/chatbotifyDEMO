@@ -7,14 +7,17 @@ from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher.filters import Text
+from aiogram.contrib.fsm_storage.memory import MemoryStorage  # ✅ STORAGE!
 
 logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+
+# ✅ STORAGE ФИКС
+storage = MemoryStorage()
 bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher(bot, storage=storage)  # ✅ storage=storage
 
 MAIN_MENU = ReplyKeyboardMarkup(resize_keyboard=True)
 MAIN_MENU.row(KeyboardButton('☕ Кофе 200₽'), KeyboardButton('📋 Бронь столика'))
@@ -29,12 +32,12 @@ class BookingForm(StatesGroup):
 async def start(message: types.Message):
     await message.reply("👋 **CafeBotify** ☕\nВыберите:", reply_markup=MAIN_MENU, parse_mode='Markdown')
 
-@dp.message_handler(Text(equals='📋 Бронь столика'))
+@dp.message_handler(lambda m: m.text == '📋 Бронь столика')
 async def book_start(message: types.Message, state: FSMContext):
     await message.reply(
         "📅 **Дата время:**\n"
-        "`15.02 19:00` (ДД.ММ ЧЧ:ММ)\n"
-        "18:00-22:00",
+        "`15.02 19:00` ← ТОЧНО!\n"
+        "18:00-22:00 (00/30 мин)",
         parse_mode='Markdown'
     )
     await BookingForm.waiting_datetime.set()
@@ -42,32 +45,34 @@ async def book_start(message: types.Message, state: FSMContext):
 @dp.message_handler(state=BookingForm.waiting_datetime)
 async def parse_datetime(message: types.Message, state: FSMContext):
     text = message.text.strip()
-    match = re.match(r'(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})$', text)
     
+    # ✅ СТРОГОЕ совпадение
+    match = re.match(r'^(\d{1,2})\.(\d{1,2})\s+(\d{2}):(\d{2})$', text)
     if not match:
-        await message.reply("❌ **15.02 19:00** точно!", parse_mode='Markdown')
-        return
+        await message.reply("❌ **15.02 19:00** ← ТОЧНО!", parse_mode='Markdown')
+        return  # ✅ Остаёмся в состоянии
     
-    day, mon, hour, min_ = map(int, match.groups())
+    day, month, hour, minute = map(int, match.groups())
     now = datetime.now()
     
     try:
-        dt = now.replace(day=day, month=mon, hour=hour, minute=min_)
-        if dt <= now: 
-            dt += timedelta(days=1)
+        booking_dt = now.replace(day=day, month=month, hour=hour, minute=minute)
+        if booking_dt <= now:
+            booking_dt += timedelta(days=1)
         
-        if not (18 <= hour <= 22 and min_ in [0, 30]):
+        # ✅ Валидация времени
+        if hour < 18 or hour > 22 or minute not in [0, 30]:
             await message.reply("❌ **18:00, 18:30...22:00**", parse_mode='Markdown')
             return
         
-        await state.update_data(dt=dt)
+        await state.update_data(dt=booking_dt)
         
         kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         kb.row(KeyboardButton('1-2'), KeyboardButton('3-4'))
         kb.row(KeyboardButton('5+'), KeyboardButton('❌ Отмена'))
         
         await message.reply(
-            f"✅ **{dt.strftime('%d.%m %H:%M')}**\n👥 Сколько человек?",
+            f"✅ **{booking_dt.strftime('%d.%m %H:%M')}**\n\n👥 **Сколько человек?**",
             reply_markup=kb,
             parse_mode='Markdown'
         )
@@ -79,7 +84,7 @@ async def parse_datetime(message: types.Message, state: FSMContext):
 @dp.message_handler(state=BookingForm.waiting_people)
 async def finish_booking(message: types.Message, state: FSMContext):
     if message.text == '❌ Отмена':
-        await message.reply("❌ Отмена", reply_markup=MAIN_MENU)
+        await message.reply("❌ Бронь отменена ☕", reply_markup=MAIN_MENU)
         await state.finish()
         return
     
@@ -88,32 +93,39 @@ async def finish_booking(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
     await message.reply(
-        f"✅ **БРОНЬ!**\n"
+        f"✅ **БРОНЬ ПОДТВЕРЖДЕНА!**\n\n"
         f"📅 {data['dt'].strftime('%d.%m %H:%M')}\n"
-        f"👥 {people} чел\n"
-        f"📞 8(861)123-45-67",
+        f"👥 {people} человек\n\n"
+        f"📞 **8 (861) 123-45-67**\n\n"
+        f"🎉 **CafeBotify** ☕",
         reply_markup=MAIN_MENU,
         parse_mode='Markdown'
     )
     await state.finish()
 
-# МЕНЮ КНОПКИ
-@dp.message_handler(lambda m: m.text in ['☕ Кофе 200₽', '🍵 Чай 150₽'])
-async def menu_buttons(message: types.Message):
-    await message.reply("✅ **Заказ принят!** ☕", reply_markup=MAIN_MENU, parse_mode='Markdown')
-
-# ЛОВИМ ВСЕ ОСТАЛЬНОЕ
+# ✅ МЕНЮ - только без состояний
 @dp.message_handler()
-async def catch_all(message: types.Message):
-    await message.reply("☕ **Меню:** кофе/чай/пирог\n📋 Бронь", reply_markup=MAIN_MENU, parse_mode='Markdown')
+async def menu_handler(message: types.Message):
+    text = message.text.lower()
+    
+    if any(word in text for word in ['кофе', '☕']):
+        await message.reply("☕ **Кофе 200₽** ✅", reply_markup=MAIN_MENU, parse_mode='Markdown')
+    elif any(word in text for word in ['чай', '🍵']):
+        await message.reply("🍵 **Чай 150₽** ✅", reply_markup=MAIN_MENU, parse_mode='Markdown')
+    elif 'пирог' in text:
+        await message.reply("🥧 **Пирог 100₽** ✅", reply_markup=MAIN_MENU, parse_mode='Markdown')
+    elif message.text in ['🛒 Оформить заказ', '❓ Помощь']:
+        await message.reply("☕ **Выберите из меню ☝️**", reply_markup=MAIN_MENU, parse_mode='Markdown')
+    else:
+        await message.reply("☕ **Меню:** кофе/чай/пирог\n📋 Бронь", reply_markup=MAIN_MENU, parse_mode='Markdown')
 
-# WEBHOOK
+# WEBHOOK Render
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
 
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
-    print("✅ CafeBotify LIVE!")
+    print("✅ CafeBotify LIVE с MemoryStorage!")
 
 if __name__ == '__main__':
     executor.start_webhook(
