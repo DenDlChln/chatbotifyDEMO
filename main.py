@@ -53,13 +53,12 @@ storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
 def get_main_menu():
-    """ДЕМО меню С кнопкой настроить уведомления"""
+    """ЧИСТОЕ меню для клиента"""
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
     for item, price in CAFE.get("menu", {}).items():
         menu.add(KeyboardButton(f"{item} — {price}₽"))
     menu.add(KeyboardButton("📋 Бронь столика"))
     menu.add(KeyboardButton("❓ Помощь"))
-    menu.add(KeyboardButton("🔧 Настроить уведомления"))  # ✅ ДЕМО кнопка!
     return menu
 
 MAIN_MENU = get_main_menu()
@@ -77,48 +76,11 @@ class BookingForm(StatesGroup):
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     await message.reply(
-        f"👋 Добро пожаловать в **{CAFE.get('name', 'Кофейню')}** ☕!\n\n"
-        f"🔧 *Сначала настройте уведомления!*\n\n"
-        f"☕ Выберите товар из меню ниже:",
+        f"👋 Добро пожаловать в **{CAFE.get('name', 'Кофейню')}** ☕\n\n"
+        f"Выберите товар из меню ниже:",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
     )
-
-# ================== 🔧 НАСТРОИТЬ УВЕДОМЛЕНИЯ (ДЕМО!) ==================
-@dp.message_handler(lambda m: m.text == "🔧 Настроить уведомления")
-async def setup_notifications(message: types.Message):
-    """🎯 Получает ID нового клиента и отправляет ТЕБЕ!"""
-    admin_id = CAFE.get("admin_chat_id")
-    
-    if not admin_id:
-        await message.reply("❌ Ошибка: admin_chat_id не настроен в config.json!")
-        return
-        
-    try:
-        # ✅ ОТПРАВЛЯЕТ ТЕБЕ (админу) данные НОВОГО КЛИЕНТА!
-        await bot.send_message(
-            admin_id,
-            f"🎉 **НОВЫЙ КЛИЕНТ ХОЧЕТ ДЕМО!**\n\n"
-            f"🆔 `{message.from_user.id}`\n"
-            f"👤 @{message.from_user.username or 'no_username'}\n"
-            f"📱 {message.from_user.first_name or 'no_name'}\n"
-            f"⏰ {datetime.now().strftime('%d.%m %H:%M')}\n\n"
-            f"💡 *Теперь все заказы будут идти ТЕБЕ!*",
-            parse_mode="Markdown"
-        )
-        
-        await message.reply(
-            "✅ *Уведомления настроены!* 🎉\n\n"
-            f"🎉 Теперь все заказы будут приходить **админу** (`{admin_id}`) 24/7!\n\n"
-            f"🔥 Тестируйте меню! ☕\n"
-            f"📱 Админ получит все ваши заказы!",
-            reply_markup=MAIN_MENU,
-            parse_mode="Markdown"
-        )
-        
-    except Exception as e:
-        logging.error(f"Ошибка настройки уведомлений: {e}")
-        await message.reply("⚠️ Ошибка отправки админу. Проверьте config.json")
 
 # ================== ЗАКАЗЫ ☕ ==================
 @dp.message_handler(lambda m: any(f"{item} — {price}₽" == m.text.strip() for item, price in CAFE.get("menu", {}).items()))
@@ -172,13 +134,16 @@ async def process_quantity(message: types.Message, state: FSMContext):
     )
     await OrderForm.waiting_confirm.set()
 
+# 🔥 КРИТИЧНЫЙ ФИКС: ПРОВЕРКА ОТМЕНЫ ПЕРВОЙ!
 @dp.message_handler(state=OrderForm.waiting_confirm)
 async def confirm_order(message: types.Message, state: FSMContext):
+    # ✅ ПЕРВЫМ делом проверяем отмену!
     if message.text == "❌ Отмена":
         await state.finish()
         await message.reply("❌ Заказ отменён", reply_markup=MAIN_MENU)
         return
 
+    # Только если НЕ отмена — заказ!
     data = await state.get_data()
     admin_id = CAFE.get("admin_chat_id")
     
@@ -317,8 +282,7 @@ async def help_handler(message: types.Message):
     await message.reply(
         f"**{CAFE.get('name')}** — справка ☕\n\n"
         f"☕ **Меню** — выберите товар → количество → подтвердите\n"
-        f"📋 **Бронь** — дата/время → количество человек\n"
-        f"🔧 **Настроить уведомления** — все заказы админу\n\n"
+        f"📋 **Бронь** — дата/время → количество человек\n\n"
         f"📞 **{CAFE.get('phone', '+7 (XXX) XXX-XX-XX')}**\n"
         f"🕐 **{start_h}:00–{end_h}:00**",
         reply_markup=MAIN_MENU,
@@ -331,7 +295,6 @@ async def fallback(message: types.Message, state: FSMContext):
     await state.finish()
     await message.reply(
         f"👋 **{CAFE.get('name')}**\n\n"
-        f"🔧 *Сначала настройте уведомления!*\n\n"
         "Выберите из меню ☕",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
@@ -349,7 +312,7 @@ WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
 
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"DEMO {CAFE.get('name')} запущен!")
+    logging.info(f"{CAFE.get('name')} запущен!")
 
 if __name__ == "__main__":
     executor.start_webhook(
