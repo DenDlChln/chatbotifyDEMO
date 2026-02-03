@@ -18,11 +18,9 @@ def load_config():
         with open("config.json", "r", encoding="utf-8") as f:
             config = json.load(f)["cafe"]
             config["admin_chat_id"] = int(config["admin_chat_id"])
-            print(f"🔍 CONFIG: Загружен {config.get('name')}")
-            print(f"🔍 CONFIG: admin_chat_id = {config['admin_chat_id']}")
             return config
     except Exception as e:
-        print(f"💥 CONFIG ОШИБКА: {e}")
+        logging.error(f"config.json ошибка: {e}")
         return {}
 
 CAFE = load_config()
@@ -46,9 +44,8 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-print(f"🔍 TOKEN: {len(TOKEN) if TOKEN else 'ПУСТОЙ'} символов")
 if not TOKEN or ' ' in TOKEN:
-    print("💥 TELEGRAM_TOKEN не найден!")
+    logging.error("TELEGRAM_TOKEN не найден!")
     exit(1)
 
 bot = Bot(token=TOKEN)
@@ -56,11 +53,13 @@ storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
 def get_main_menu():
+    """ДЕМО меню С кнопкой настроить уведомления"""
     menu = ReplyKeyboardMarkup(resize_keyboard=True)
     for item, price in CAFE.get("menu", {}).items():
         menu.add(KeyboardButton(f"{item} — {price}₽"))
     menu.add(KeyboardButton("📋 Бронь столика"))
     menu.add(KeyboardButton("❓ Помощь"))
+    menu.add(KeyboardButton("🔧 Настроить уведомления"))  # ✅ ДЕМО кнопка!
     return menu
 
 MAIN_MENU = get_main_menu()
@@ -74,41 +73,56 @@ class BookingForm(StatesGroup):
     waiting_datetime = State()
     waiting_people = State()
 
-# ================== /START с DEBUG ==================
+# ================== /START ==================
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    print(f"🔥 START: user_id={message.from_user.id}")
-    print(f"🔥 START: username=@{message.from_user.username}")
-    
-    admin_id = CAFE.get("admin_chat_id")
-    print(f"🔥 START: admin_id={admin_id}")
-    
-    # 🔥 ТЕСТ УВЕДОМЛЕНИЯ ПРЯМО СЕЙЧАС!
-    if admin_id:
-        try:
-            await bot.send_message(
-                admin_id, 
-                f"🧪 ТЕСТ /start!\n"
-                f"Клиент: {message.from_user.id}\n"
-                f"@{message.from_user.username or 'no_username'}\n"
-                f"Время: {datetime.now().strftime('%H:%M:%S')}"
-            )
-            print("✅ ТЕСТ /start АДМИНУ ДОШЁЛ!")
-        except Exception as e:
-            print(f"💥 ОШИБКА ТЕСТ /start: {e}")
-    
     await message.reply(
-        f"👋 Добро пожаловать в **{CAFE.get('name', 'Кофейню')}** ☕\n\n"
-        f"Выберите товар из меню ниже:",
+        f"👋 Добро пожаловать в **{CAFE.get('name', 'Кофейню')}** ☕!\n\n"
+        f"🔧 *Сначала настройте уведомления!*\n\n"
+        f"☕ Выберите товар из меню ниже:",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
     )
 
-# ================== ЗАКАЗЫ ☕ с ГРОМКИМ DEBUG ==================
+# ================== 🔧 НАСТРОИТЬ УВЕДОМЛЕНИЯ (ДЕМО!) ==================
+@dp.message_handler(lambda m: m.text == "🔧 Настроить уведомления")
+async def setup_notifications(message: types.Message):
+    """🎯 Получает ID нового клиента и отправляет ТЕБЕ!"""
+    admin_id = CAFE.get("admin_chat_id")
+    
+    if not admin_id:
+        await message.reply("❌ Ошибка: admin_chat_id не настроен в config.json!")
+        return
+        
+    try:
+        # ✅ ОТПРАВЛЯЕТ ТЕБЕ (админу) данные НОВОГО КЛИЕНТА!
+        await bot.send_message(
+            admin_id,
+            f"🎉 **НОВЫЙ КЛИЕНТ ХОЧЕТ ДЕМО!**\n\n"
+            f"🆔 `{message.from_user.id}`\n"
+            f"👤 @{message.from_user.username or 'no_username'}\n"
+            f"📱 {message.from_user.first_name or 'no_name'}\n"
+            f"⏰ {datetime.now().strftime('%d.%m %H:%M')}\n\n"
+            f"💡 *Теперь все заказы будут идти ТЕБЕ!*",
+            parse_mode="Markdown"
+        )
+        
+        await message.reply(
+            "✅ *Уведомления настроены!* 🎉\n\n"
+            f"🎉 Теперь все заказы будут приходить **админу** (`{admin_id}`) 24/7!\n\n"
+            f"🔥 Тестируйте меню! ☕\n"
+            f"📱 Админ получит все ваши заказы!",
+            reply_markup=MAIN_MENU,
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logging.error(f"Ошибка настройки уведомлений: {e}")
+        await message.reply("⚠️ Ошибка отправки админу. Проверьте config.json")
+
+# ================== ЗАКАЗЫ ☕ ==================
 @dp.message_handler(lambda m: any(f"{item} — {price}₽" == m.text.strip() for item, price in CAFE.get("menu", {}).items()))
 async def start_order(message: types.Message, state: FSMContext):
-    print(f"🔥 ORDER START: {message.text} от {message.from_user.id}")
-    
     for item_name, price in CAFE.get("menu", {}).items():
         if f"{item_name} — {price}₽" == message.text.strip():
             await state.finish()
@@ -130,8 +144,6 @@ async def start_order(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderForm.waiting_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
-    print(f"🔥 QUANTITY: {message.text} от {message.from_user.id}")
-    
     if message.text == "❌ Отмена":
         await state.finish()
         await message.reply("❌ Заказ отменён", reply_markup=MAIN_MENU)
@@ -162,45 +174,33 @@ async def process_quantity(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderForm.waiting_confirm)
 async def confirm_order(message: types.Message, state: FSMContext):
-    print("🔥🔥🔥 CONFIRM_ORDER НАЧАЛСЯ!")
-    print(f"🔥🔥🔥 USER: {message.from_user.id}")
-    
+    if message.text == "❌ Отмена":
+        await state.finish()
+        await message.reply("❌ Заказ отменён", reply_markup=MAIN_MENU)
+        return
+
     data = await state.get_data()
     admin_id = CAFE.get("admin_chat_id")
     
-    print(f"🔥🔥🔥 DATA: {data}")
-    print(f"🔥🔥🔥 ADMIN_ID: {admin_id}")
-    print(f"🔥🔥🔥 CAFE: {CAFE}")
-    
     if not admin_id:
-        print("💥💥💥 АДМИН ID ОТСУТСТВУЕТ!")
-        await message.reply("❌ Ошибка config.json!")
+        await message.reply("❌ Ошибка конфигурации!")
         await state.finish()
         return
 
-    # 🔥 ГРОМЧЕЙШЕЕ ТЕСТ-СООБЩЕНИЕ
-    test_msg = f"""
-🧪🔥 DEBUG ЗАКАЗ #{random.randint(1000,9999)}
-━━━━━━━━━━━━━━━━━━━━━
-Admin ID: `{admin_id}`
-Товар: **{data.get('item', 'НЕИЗВЕСТНО')}**
-Кол-во: {data.get('quantity', 'НЕИЗВЕСТНО')}
-Сумма: {data.get('total', 'НЕИЗВЕСТНО')}₽
-Клиент: `{message.from_user.id}`
-Username: @{message.from_user.username or 'нет'}
-Время: {datetime.now().strftime('%d.%m %H:%M:%S')}
-━━━━━━━━━━━━━━━━━━━━━
-"""
-
-    print("🔥🔥🔥 ОТПРАВЛЯЕМ АДМИНУ...")
     try:
-        await bot.send_message(admin_id, test_msg, parse_mode="Markdown")
-        print("✅✅✅ АДМИН ПОЛУЧИЛ ЗАКАЗ!")
+        await bot.send_message(
+            admin_id,
+            f"☕ **НОВЫЙ ЗАКАЗ** `{CAFE.get('name')}`\n\n"
+            f"**{data['item']}** × {data['quantity']}\n"
+            f"💰 **{data['total']}₽**\n\n"
+            f"👤 @{message.from_user.username or str(message.from_user.id)}\n"
+            f"🆔 `{message.from_user.id}`\n"
+            f"📞 {CAFE.get('phone', '+7 (XXX) XXX-XX-XX')}",
+            parse_mode="Markdown"
+        )
     except Exception as e:
-        print(f"💥💥💥 ОШИБКА АДМИНА: {e}")
-        await message.reply(f"⚠️ Ошибка админа: {str(e)[:100]}")
-    
-    print("🔥🔥🔥 Клиенту: Заказ принят!")
+        logging.error(f"Ошибка уведомления админа: {e}")
+
     await message.reply(
         f"🎉 **Заказ принят!**\n\n"
         f"{random.choice(ORDER_THANKS)}\n\n"
@@ -209,12 +209,10 @@ Username: @{message.from_user.username or 'нет'}
         parse_mode="Markdown"
     )
     await state.finish()
-    print("🔥🔥🔥 CONFIRM_ORDER ЗАВЁРШЁН!")
 
 # ================== БРОНЬ СТОЛИКА ==================
 @dp.message_handler(lambda m: m.text == "📋 Бронь столика")
 async def book_start(message: types.Message, state: FSMContext):
-    print(f"🔥 BOOKING START: {message.from_user.id}")
     await state.finish()
     work_hours = CAFE.get("work_hours", [9, 22])
     start_h, end_h = work_hours
@@ -230,7 +228,6 @@ async def book_start(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=BookingForm.waiting_datetime)
 async def parse_datetime(message: types.Message, state: FSMContext):
-    print(f"🔥 BOOKING DATE: {message.text}")
     match = re.match(r"^(\d{1,2})\.(\d{1,2})\s+(\d{2}):(\d{2})$", message.text.strip())
     if not match:
         await message.reply("❌ **Неверный формат!**\n\n`15.02 19:00`", parse_mode="Markdown")
@@ -268,8 +265,6 @@ async def parse_datetime(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=BookingForm.waiting_people)
 async def finish_booking(message: types.Message, state: FSMContext):
-    print(f"🔥 BOOKING FINISH: {message.text}")
-    
     if message.text == "❌ Отмена":
         await state.finish()
         await message.reply("❌ Заявка отменена", reply_markup=MAIN_MENU)
@@ -284,6 +279,11 @@ async def finish_booking(message: types.Message, state: FSMContext):
     data = await state.get_data()
     admin_id = CAFE.get("admin_chat_id")
 
+    if not admin_id:
+        await message.reply("❌ Ошибка конфигурации!")
+        await state.finish()
+        return
+
     try:
         await bot.send_message(
             admin_id,
@@ -291,17 +291,19 @@ async def finish_booking(message: types.Message, state: FSMContext):
             f"🕐 **{data['dt'].strftime('%d.%m %H:%M')}**\n"
             f"👥 **{people} человек**\n"
             f"👤 @{message.from_user.username or str(message.from_user.id)}\n"
-            f"🆔 `{message.from_user.id}`",
+            f"🆔 `{message.from_user.id}`\n"
+            f"📞 {CAFE.get('phone', '+7 (XXX) XXX-XX-XX')}",
             parse_mode="Markdown"
         )
-        print("✅ БРОНЬ АДМИНУ ДОШЛА!")
     except Exception as e:
-        print(f"💥 ОШИБКА БРОНИ: {e}")
+        logging.error(f"Ошибка брони админу: {e}")
 
     await message.reply(
         f"✅ **Бронь принята!**\n\n"
         f"🕐 **{data['dt'].strftime('%d.%m %H:%M')}**\n"
-        f"👥 **{people} человек**",
+        f"👥 **{people} человек**\n\n"
+        f"{random.choice(BOOKING_THANKS)}\n"
+        f"📞 **{CAFE.get('phone', '+7 (XXX) XXX-XX-XX')}**",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
     )
@@ -310,13 +312,13 @@ async def finish_booking(message: types.Message, state: FSMContext):
 # ================== ПОМОЩЬ ==================
 @dp.message_handler(lambda m: m.text == "❓ Помощь")
 async def help_handler(message: types.Message):
-    print(f"🔥 HELP: {message.from_user.id}")
     work_hours = CAFE.get("work_hours", [9, 22])
     start_h, end_h = work_hours
     await message.reply(
         f"**{CAFE.get('name')}** — справка ☕\n\n"
         f"☕ **Меню** — выберите товар → количество → подтвердите\n"
-        f"📋 **Бронь** — дата/время → количество человек\n\n"
+        f"📋 **Бронь** — дата/время → количество человек\n"
+        f"🔧 **Настроить уведомления** — все заказы админу\n\n"
         f"📞 **{CAFE.get('phone', '+7 (XXX) XXX-XX-XX')}**\n"
         f"🕐 **{start_h}:00–{end_h}:00**",
         reply_markup=MAIN_MENU,
@@ -326,10 +328,10 @@ async def help_handler(message: types.Message):
 # ================== FALLBACK ==================
 @dp.message_handler()
 async def fallback(message: types.Message, state: FSMContext):
-    print(f"🔥 FALLBACK: {message.text} от {message.from_user.id}")
     await state.finish()
     await message.reply(
         f"👋 **{CAFE.get('name')}**\n\n"
+        f"🔧 *Сначала настройте уведомления!*\n\n"
         "Выберите из меню ☕",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
@@ -338,24 +340,18 @@ async def fallback(message: types.Message, state: FSMContext):
 # ================== ОШИБКИ ==================
 @dp.errors_handler()
 async def errors_handler(update, exception):
-    print(f"💥 ГЛОБАЛЬНАЯ ОШИБКА: {exception}")
+    logging.error(f"Глобальная ошибка: {exception}")
     return True
 
-# ================== WEBHOOK ==================
+# ================== WEBHOOK (Render) ==================
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
 
 async def on_startup(dp):
-    print("🚀 BOT STARTUP!")
-    print(f"🚀 WEBHOOK: {WEBHOOK_URL}")
-    print(f"🚀 CAFE: {CAFE.get('name')}")
-    print(f"🚀 ADMIN: {CAFE.get('admin_chat_id')}")
-    
     await bot.set_webhook(WEBHOOK_URL)
-    print("✅ WEBHOOK УСТАНОВЛЕН!")
+    logging.info(f"DEMO {CAFE.get('name')} запущен!")
 
 if __name__ == "__main__":
-    print("🎬 ЗАПУСК БОТА...")
     executor.start_webhook(
         dp, WEBHOOK_PATH, on_startup=on_startup,
         host="0.0.0.0", port=int(os.getenv("PORT", 10000))
