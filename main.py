@@ -6,16 +6,20 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 import aiohttp
 
 # 🛠️ ЛОГИ + КОНФИГ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 🔥 TOKEN С ПРОВЕРКОЙ
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 1471275603  # ТВОЙ ID
-CAFE_PHONE = "+7 989 273-67-56"
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN НЕ НАЙДЕН! Установите в Render Dashboard → Environment")
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1471275603"))  # 🔧 Render ENV
+CAFE_PHONE = os.getenv("CAFE_PHONE", "+7 989 273-67-56")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
@@ -50,7 +54,7 @@ class OrderStates(StatesGroup):
     waiting_quantity = State()
     waiting_confirm = State()
 
-# 🔔 ГЛАВНОЕ МЕНЮ
+# 🔔 START
 @dp.message_handler(commands=['start'])
 async def start_cmd(message: types.Message):
     await message.reply(
@@ -60,13 +64,14 @@ async def start_cmd(message: types.Message):
         parse_mode="Markdown"
     )
 
-# 🛒 ОБРАБОТКА ЗАКАЗОВ
+# 🛒 ЗАКАЗЫ
 @dp.message_handler(lambda message: any(item in message.text for item in CAFE_MENU.keys()))
-async def process_order(message: types.Message):
+async def process_order(message: types.Message, state: FSMContext):
     logger.info(f"☕ ORDER START: '{message.text}' от user={message.from_user.id}")
     
     for item_name, price in CAFE_MENU.items():
         if item_name in message.text:
+            await state.update_data(item=item_name, price=price)
             await message.reply(
                 f"*{item_name}* — {price}₽\n\n"
                 "Отличный выбор 😊\n\n"
@@ -94,20 +99,15 @@ async def process_quantity(message: types.Message, state: FSMContext):
         return
     
     try:
-        if message.text == "3+":
-            quantity = 3
-        else:
-            quantity = int(message.text)
+        quantity = 3 if message.text == "3+" else int(message.text)
+        data = await state.get_data()
+        total = data['price'] * quantity
         
-        item = state.get_data().get('item', 'Неизвестно')
-        price = state.get_data().get('price', 0)
-        total = price * quantity
-        
-        await state.update_data(item=item_name, price=price, quantity=quantity, total=total)
+        await state.update_data(quantity=quantity, total=total)
         
         await message.reply(
             f"📋 *Ваш заказ:*\n\n"
-            f"`{item}` × *{quantity}*\n"
+            f"`{data['item']}` × *{quantity}*\n"
             "*Итого:* `{total}₽`\n\n"
             "*Подтвердить?*",
             reply_markup=ReplyKeyboardMarkup(
@@ -121,51 +121,47 @@ async def process_quantity(message: types.Message, state: FSMContext):
         )
         await OrderStates.waiting_confirm.set()
     except:
-        await message.reply("❌ Введите число (1, 2, 3+ или Отмена)", reply_markup=MAIN_MENU)
+        await message.reply("❌ Введите число (1, 2, 3+ или Отмена)")
 
 # ✅ ПОДТВЕРЖДЕНИЕ
-@dp.message_handler(lambda m: m.text == "✅ Подтвердить", state=OrderStates.waiting_confirm)
-async def confirm_order(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    logger.info(f"✅ CONFIRM ПРОШЁЛ ОТМЕНУ — ОБРАБОТЫВАЕМ ЗАКАЗ!")
-    logger.info(f"📦 DATA: {data}")
-    logger.info(f"👑 ADMIN_ID: {ADMIN_ID}")
-    
-    # 📤 ОТПРАВЛЯЕМ АДМИНУ
-    logger.info("📤 ОТПРАВЛЯЕМ АДМИНУ...")
-    admin_msg = (
-        f"☕ *НОВЫЙ ЗАКАЗ* `Кофейня «Уют» ☕`\n\n"
-        f"*{data['item']}* × {data['quantity']}\n"
-        f"💰 *{data['total']}₽*\n\n"
-        f"👤 @{message.from_user.username or 'no_username'}\n"
-        f"🆔 `{message.from_user.id}`\n"
-        f"📞 {CAFE_PHONE}"
-    )
-    
-    await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
-    logger.info("✅ АДМИН ПОЛУЧИЛ ЗАКАЗ!")
-    
-    # 👤 ПОДТВЕРЖДЕНИЕ КЛИЕНТУ
-    await message.reply(
-        f"🎉 *Заказ принят!*\n\n"
-        f"Спасибо! Уже готовим ☕\n\n"
-        f"📞 *{CAFE_PHONE}*",
-        reply_markup=MAIN_MENU,
-        parse_mode="Markdown"
-    )
-    logger.info("✅ ЗАКАЗ ПОЛНОСТЬЮ ОБРАБОТАН!")
-    await state.finish()
-
-# 🚫 ОТМЕНА
-@dp.message_handler(lambda m: m.text == "❌ Отмена", state="*")
-async def cancel_order(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.reply("❌ Заказ отменён. Выберите товар:", reply_markup=MAIN_MENU)
+@dp.message_handler(state=OrderStates.waiting_confirm)
+async def process_confirm(message: types.Message, state: FSMContext):
+    if message.text == "✅ Подтвердить":
+        data = await state.get_data()
+        logger.info(f"✅ CONFIRM ПРОШЁЛ! DATA: {data}")
+        logger.info(f"👑 ADMIN_ID: {ADMIN_ID}")
+        
+        # 📤 АДМИНУ
+        admin_msg = (
+            f"☕ *НОВЫЙ ЗАКАЗ* `Кофейня «Уют» ☕`\n\n"
+            f"*{data['item']}* × {data['quantity']}\n"
+            f"💰 *{data['total']}₽*\n\n"
+            f"👤 @{message.from_user.username or 'no_username'}\n"
+            f"🆔 `{message.from_user.id}`\n"
+            f"📞 {CAFE_PHONE}"
+        )
+        
+        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
+        logger.info("✅ АДМИН ПОЛУЧИЛ!")
+        
+        # 👤 КЛИЕНТУ
+        await message.reply(
+            f"🎉 *Заказ принят!*\n\n"
+            f"Спасибо! Уже готовим ☕\n\n"
+            f"📞 *{CAFE_PHONE}*",
+            reply_markup=MAIN_MENU,
+            parse_mode="Markdown"
+        )
+        logger.info("✅ ЗАКАЗ ОК!")
+        await state.finish()
+    else:
+        await state.finish()
+        await message.reply("❌ Отменено", reply_markup=MAIN_MENU)
 
 # 🔧 ДЕМО КНОПКА
 @dp.message_handler(lambda m: m.text == "🔧 Настроить уведомления")
 async def setup_notifications(message: types.Message):
-    logger.info(f"🎉 ДЕМО КЛИК: user={message.from_user.id}")
+    logger.info(f"🎉 ДЕМО КЛИК: {message.from_user.id}")
     
     await bot.send_message(
         ADMIN_ID,
@@ -179,60 +175,38 @@ async def setup_notifications(message: types.Message):
     
     await message.reply(
         "✅ *Уведомления настроены!* 🎉\n\n"
-        "🔥 Теперь все заказы будут приходить админу!\n\n"
-        "Тестируйте меню ☕",
+        "🔥 Тестируйте меню ☕",
         reply_markup=MAIN_MENU,
         parse_mode="Markdown"
     )
 
-# ❓ ПОМОЩЬ
-@dp.message_handler(lambda m: m.text == "❓ Помощь")
-async def help_cmd(message: types.Message):
-    await message.reply(
-        "☕ *Помощь*\n\n"
-        "• Выберите товар из меню\n"
-        "• Укажите количество\n"
-        "• Подтвердите заказ\n\n"
-        "📞 " + CAFE_PHONE,
-        reply_markup=MAIN_MENU,
-        parse_mode="Markdown"
-    )
-
-# 📋 БРОНЬ
-@dp.message_handler(lambda m: m.text == "📋 Бронь столика")
-async def booking(message: types.Message):
-    await message.reply(
-        f"📋 *Бронь столика*\n\n"
-        f"📞 Звоните: {CAFE_PHONE}\n"
-        f"⏰ Режим: 8:00-23:00",
-        reply_markup=MAIN_MENU,
-        parse_mode="Markdown"
-    )
-
-# 🔍 DEBUG (ИСПРАВЛЕННЫЙ)
-@dp.message_handler(lambda m: m.text == "🔍 DEBUG INFO")
-async def debug_info(message: types.Message):
-    """🔧 ИСПРАВЛЕННАЯ версия без Markdown ошибок"""
-    try:
-        # ✅ HTML вместо Markdown = НИКОГДА не ломается
+# ❓ ПОМОЩЬ + БРОНЬ + DEBUG
+@dp.message_handler(lambda m: m.text in ["❓ Помощь", "📋 Бронь столика", "🔍 DEBUG INFO"])
+async def other_handlers(message: types.Message):
+    if m.text == "❓ Помощь":
+        await message.reply(
+            f"☕ *Помощь*\n\n• Выберите товар\n• Укажите количество\n• Подтвердите\n\n📞 {CAFE_PHONE}",
+            reply_markup=MAIN_MENU,
+            parse_mode="Markdown"
+        )
+    elif m.text == "📋 Бронь столика":
+        await message.reply(
+            f"📋 *Бронь*\n\n📞 {CAFE_PHONE}\n⏰ 8:00-23:00",
+            reply_markup=MAIN_MENU,
+            parse_mode="Markdown"
+        )
+    else:  # DEBUG
         debug_msg = f"""
-🔍 DEBUG INFO
+<b>🔍 DEBUG INFO</b>
 ━━━━━━━━━━━━━━━
-🆔 User ID: {message.from_user.id}
-💬 Chat ID: {message.chat.id}
+🆔 User ID: <code>{message.from_user.id}</code>
+💬 Chat ID: <code>{message.chat.id}</code>
 👤 Username: @{message.from_user.username or 'no_username'}
-📊 State: NONE
-📦 Data: {{}}
-⚙️ Admin: {ADMIN_ID}
-📞 Phone: {CAFE_PHONE}
+⚙️ Admin: <code>{ADMIN_ID}</code>
+📞 Phone: <b>{CAFE_PHONE}</b>
 ━━━━━━━━━━━━━━━
         """.strip()
-        
         await message.reply(debug_msg, parse_mode="HTML")
-        logger.info("✅ DEBUG OK")
-    except Exception as e:
-        logger.error(f"❌ DEBUG ERROR: {e}")
-        await message.reply("❌ Ошибка DEBUG. Продолжаем работу.")
 
 # 🛑 ОСЫЛКИ
 @dp.errors_handler()
@@ -241,12 +215,13 @@ async def errors_handler(update, exception):
     return True
 
 if __name__ == '__main__':
+    logger.info("🚀 BOT START!")
     from aiogram import executor
     executor.start_webhook(
         dispatcher=dp,
         webhook_path="/webhook",
-        on_startup=None,
-        on_shutdown=None,
+        on_startup=lambda _: logger.info("✅ WEBHOOK OK"),
+        on_shutdown=lambda _: logger.info("🔴 SHUTDOWN"),
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8080))
     )
