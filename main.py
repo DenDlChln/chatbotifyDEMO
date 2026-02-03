@@ -307,7 +307,7 @@ async def fallback(message: types.Message):
 # ================== WEBHOOK (Render) ==================
 if TOKEN:
     WEBHOOK_PATH = f"/webhook/{TOKEN}"
-    WEBHOOK_URL = f"https://your-app.onrender.com{WEBHOOK_PATH}"  # Замени на твой URL
+    WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com{WEBHOOK_PATH}"
 
     async def on_startup(dp):
         await bot.set_webhook(WEBHOOK_URL)
