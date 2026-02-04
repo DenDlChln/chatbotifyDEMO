@@ -2,11 +2,10 @@ import os
 import json
 import logging
 import asyncio
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
 from aiohttp import web
 from datetime import datetime
 
@@ -71,12 +70,10 @@ class OrderStates(StatesGroup):
 
 # ========================================
 def is_cafe_open():
-    """🕐 Проверка графика работы"""
     now = datetime.now().hour
     return WORK_START <= now < WORK_END
 
 def get_work_status():
-    """📊 Статус работы кофейни"""
     now = datetime.now()
     current_hour = now.hour
     if is_cafe_open():
@@ -87,7 +84,6 @@ def get_work_status():
         return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {next_open}"
 
 def get_closed_message():
-    """🙏 Вежливое сообщение при закрытии"""
     return (
         f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
         f"⏰ {get_work_status()}\n\n"
@@ -115,6 +111,7 @@ def get_confirm_keyboard():
     return kb
 
 # ========================================
+# Все handlers (БЕЗ ИЗМЕНЕНИЙ из v8.19+)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -128,15 +125,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
-    """🎯 Выбор напитка + проверка графика"""
     logger.info(f"🥤 {message.text} от {message.from_user.id}")
     
-    # ✅ НОВОЕ: Проверка графика работы
     if not is_cafe_open():
-        await message.answer(
-            get_closed_message(),
-            reply_markup=get_menu_keyboard()
-        )
+        await message.answer(get_closed_message(), reply_markup=get_menu_keyboard())
         return
     
     drink = message.text
@@ -206,8 +198,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             f"🥤 <b>{data['drink']}</b>\n"
             f"📊 {data['quantity']} порций\n"
             f"💰 <b>{data['total']} ₽</b>\n\n"
-            f"📞 <code>{CAFE_PHONE}</code>\n"
-            f"✅ <i>Готовим! ⏳</i>",
+            f"📞 <code>{CAFE_PHONE}</code>",
             reply_markup=get_menu_keyboard()
         )
         
@@ -260,25 +251,31 @@ async def echo(message: types.Message, state: FSMContext):
 
 # ========================================
 async def on_startup(dp):
-    """🚀 Инициализация webhook"""
     await bot.delete_webhook(drop_pending_updates=True)
     await asyncio.sleep(1)
     await bot.set_webhook(WEBHOOK_URL)
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v8.19+ HOURS — {CAFE_NAME}")
+    logger.info(f"🚀 v8.19++ LIVE — {CAFE_NAME}")
 
 async def on_shutdown(dp):
-    """🛑 Очистка"""
     await bot.delete_webhook()
     await dp.storage.close()
-    logger.info("🛑 v8.19+ STOP")
+    logger.info("🛑 v8.19++ STOP")
+
+# ========================================
+async def healthcheck(request):
+    """✅ RENDER HEALTHCHECK — убирает 404!"""
+    logger.info("🏥 Healthcheck OK")
+    return web.Response(text="CafeBotify v8.19++ LIVE ✅", status=200)
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v8.19+ WEBHOOK — {CAFE_NAME}")
+    logger.info(f"🎬 v8.19++ WEBHOOK — {CAFE_NAME}")
     
-    # ✅ ПРОСТОЙ WEBHOOK (как в v8.19)
+    app = web.Application()
+    app.router.add_get('/', healthcheck)  # ✅ Healthcheck!
+    
     executor.start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
