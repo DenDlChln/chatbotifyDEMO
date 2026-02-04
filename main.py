@@ -31,7 +31,12 @@ def load_config():
             "name": "Кофейня «Уют» ☕",
             "phone": "+7 989 273-67-56",
             "admin_chat_id": 1471275603,
-            "menu": {"☕ Капучино": 250, "🥛 Латте": 270}
+            "menu": {
+                "☕ Капучино": 250,
+                "🥛 Латте": 270,
+                "🍵 Чай": 180,
+                "⚡ Эспрессо": 200
+            }
         }
 
 cafe_config = load_config()
@@ -42,6 +47,10 @@ MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 10007))
+
+# ✅ КАРТИНКИ ДЛЯ ЗАКАЗОВ (Telegram URLs)
+ORDER_PHOTO_CLIENT = "https://i.imgur.com/8zX5z0q.jpg"  # Клиенту
+ORDER_PHOTO_ADMIN = "https://i.imgur.com/Q7jKz8m.jpg"    # Админу
 
 # ========================================
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
@@ -85,13 +94,16 @@ async def drink_selected(message: types.Message, state: FSMContext):
     await state.finish()
     await state.update_data(drink=drink, price=price)
     await OrderStates.waiting_for_quantity.set()
-    await message.answer(f"🥤 <b>{drink}</b>\n💰 <b>{price}₽</b>\n📝 Сколько?", reply_markup=get_quantity_keyboard())
+    await message.answer(
+        f"🥤 <b>{drink}</b>\n💰 <b>{price}₽</b>\n\n📝 Сколько порций?",
+        reply_markup=get_quantity_keyboard()
+    )
 
 @dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
     if message.text == "🔙 Отмена":
         await state.finish()
-        await message.answer("❌ Отменено ☕", reply_markup=get_menu_keyboard())
+        await message.answer("❌ Заказ отменён ☕", reply_markup=get_menu_keyboard())
         return
     
     try:
@@ -101,39 +113,90 @@ async def process_quantity(message: types.Message, state: FSMContext):
             total = data['price'] * qty
             await state.update_data(quantity=qty, total=total)
             await OrderStates.waiting_for_confirmation.set()
-            await message.answer(f"📋 <b>{data['drink']} ×{qty} = {total}₽</b>\n📞 {CAFE_PHONE}", reply_markup=get_confirm_keyboard())
+            await message.answer(
+                f"<b>📋 ПОДТВЕРДИТЕ ЗАКАЗ</b>\n\n"
+                f"🥤 <b>{data['drink']}</b>\n"
+                f"📊 {qty} порций\n"
+                f"💰 <b>{total} ₽</b>\n\n"
+                f"📞 <code>{CAFE_PHONE}</code>",
+                reply_markup=get_confirm_keyboard()
+            )
             return
     except:
         pass
     
     data = await state.get_data()
-    await message.answer(f"{data['drink']} — {data['price']}₽\n1️⃣-5️⃣", reply_markup=get_quantity_keyboard())
+    await message.answer(
+        f"🥤 <b>{data['drink']}</b> — {data['price']}₽\n\n"
+        "<b>1️⃣-5️⃣</b> или <b>🔙 Отмена</b>",
+        reply_markup=get_quantity_keyboard()
+    )
 
 @dp.message_handler(state=OrderStates.waiting_for_confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
     if message.text == "✅ Подтвердить":
-        await send_order_to_admin({
+        order_data = {
             'user_id': message.from_user.id,
             'first_name': message.from_user.first_name or "Гость",
             'drink': data['drink'],
             'quantity': data['quantity'],
             'total': data['total']
-        })
+        }
+        
+        # ✅ КАРТИНКА КЛИЕНТУ
+        await message.answer_photo(
+            photo=ORDER_PHOTO_CLIENT,
+            caption=f"🎉 <b>ЗАКАЗ #{message.from_user.id} ПРИНЯТ!</b>\n\n"
+                   f"🥤 {data['drink']}\n"
+                   f"📊 {data['quantity']} порций\n"
+                   f"💰 <b>{data['total']} ₽</b>\n\n"
+                   f"📞 <code>{CAFE_PHONE}</code>\n"
+                   f"✅ <i>Готовим! ⏳</i>",
+            reply_markup=get_menu_keyboard()
+        )
+        
+        # ✅ КАРТИНКА АДМИНУ
+        await send_order_to_admin(order_data)
+        
         await state.finish()
-        await message.answer(f"🎉 <b>ЗАКАЗ #{message.from_user.id}</b>\n📞 {CAFE_PHONE}")
+        logger.info(f"✅ Заказ #{message.from_user.id}")
         return
     
-    await state.finish()
-    await message.answer("🔙 Меню ☕", reply_markup=get_menu_keyboard())
+    elif message.text == "🔙 Меню":
+        await state.finish()
+        await message.answer("🔙 В меню ☕", reply_markup=get_menu_keyboard())
+        return
+    
+    await message.answer(
+        f"<b>📋 {data['drink']} ×{data['quantity']} = {data['total']}₽</b>\n\n"
+        "<b>✅ Подтвердить</b> / <b>🔙 Меню</b>",
+        reply_markup=get_confirm_keyboard()
+    )
 
 async def send_order_to_admin(order_data):
+    """🔔 Отправка заказа АДМИНУ с КАРТИНКОЙ"""
+    text = (
+        f"🔔 <b>🚨 НОВЫЙ ЗАКАЗ #{order_data['user_id']}</b>\n\n"
+        f"👤 <b>{order_data['first_name']}</b>\n"
+        f"🆔 <code>{order_data['user_id']}</code>\n"
+        f"📱 <a href='tg://user?id={order_data['user_id']}'>Написать</a>\n\n"
+        f"🥤 <b>{order_data['drink']}</b>\n"
+        f"📊 <b>{order_data['quantity']} порций</b>\n"
+        f"💰 <b>{order_data['total']} ₽</b>\n\n"
+        f"📞 <code>{CAFE_PHONE}</code>"
+    )
     try:
-        await bot.send_message(ADMIN_ID, f"🔔 ЗАКАЗ #{order_data['user_id']}\n{order_data['drink']} ×{order_data['quantity']} = {order_data['total']}₽")
-        logger.info(f"✅ Заказ #{order_data['user_id']}")
-    except:
-        pass
+        await bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=ORDER_PHOTO_ADMIN,
+            caption=text,
+            parse_mode=types.ParseMode.HTML
+        )
+        logger.info(f"✅ Заказ #{order_data['user_id']} админу с фото")
+    except Exception as e:
+        logger.error(f"❌ Админ фото: {e}")
 
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
@@ -141,28 +204,28 @@ async def echo(message: types.Message, state: FSMContext):
     await message.answer(f"{CAFE_NAME}\n☕ Выберите:", reply_markup=get_menu_keyboard())
 
 # ========================================
-# ✅ RENDER PORT — Критично для Web Service!
+# ✅ RENDER Web Service — HTTP сервер
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(f'v8.15 LIVE - {CAFE_NAME}'.encode())
+        self.wfile.write(f'v8.16 LIVE - {CAFE_NAME}'.encode())
     
     def log_message(self, *args): pass
 
 def run_http_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    logger.info(f"🌐 HTTP на PORT {PORT}")
+    logger.info(f"🌐 HTTP сервер на PORT {PORT}")
     server.serve_forever()
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🚀 v8.15 Web Service — {CAFE_NAME}")
+    logger.info(f"🚀 v8.16 КАРТИНКИ — {CAFE_NAME}")
     
-    # ✅ 1. HTTP сервер для Render (обязательно!)
+    # ✅ 1. HTTP для Render
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
     
-    # ✅ 2. Telegram Bot polling
+    # ✅ 2. Telegram Bot
     executor.start_polling(dp, skip_updates=True)
