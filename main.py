@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio  # ✅ ФИКС!
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -257,13 +258,14 @@ async def echo(message: types.Message, state: FSMContext):
 
 # ========================================
 async def on_startup(dp):
+    """🚀 Старт с московским временем"""
     msk_time = get_moscow_time().strftime("%H:%M")
     await bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(1)
+    await asyncio.sleep(1)  # ✅ Теперь работает!
     await bot.set_webhook(WEBHOOK_URL)
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v8.19+++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time}")
+    logger.info(f"🚀 v8.19++++ MSK — {CAFE_NAME} | Сейчас MSK: {msk_time}")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
@@ -271,10 +273,12 @@ async def on_shutdown(dp):
     logger.info("🛑 STOP")
 
 async def healthcheck(request):
-    return web.Response(text="CafeBotify v8.19+++ LIVE ✅", status=200)
+    return web.Response(text="CafeBotify v8.19++++ LIVE ✅", status=200)
 
 # ========================================
 if __name__ == '__main__':
+    logger.info(f"🎬 v8.19++++ WEBHOOK — {CAFE_NAME}")
+    
     app = web.Application()
     app.router.add_get('/', healthcheck)
     
