@@ -15,14 +15,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ========================================
-# ✅ ЧИТАЕМ config.json (ваш формат)
 def load_config():
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data['cafe']
     except:
-        logger.warning("⚠️ config.json не найден, используем дефолт")
+        logger.warning("⚠️ config.json не найден")
         return {
             "name": "Кофейня ☕",
             "phone": "+7 989 273-67-56", 
@@ -54,7 +53,7 @@ dp = Dispatcher(bot, storage=storage)
 
 class OrderStates(StatesGroup):
     waiting_for_quantity = State()
-    waiting_for_confirmation = State()  # ✅ НОВОЕ!
+    waiting_for_confirmation = State()
 
 # ========================================
 def get_menu_keyboard():
@@ -102,7 +101,7 @@ def get_work_status():
 # ========================================
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.finish()
+    await state.finish()  # ✅ ОЧИСТКА
     await message.answer(
         f"{CAFE_NAME}\n\n🏪 {get_work_status()}\n\n"
         "<b>☕ Выберите напиток ниже 😊</b>",
@@ -110,7 +109,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     logger.info(f"👤 /start от {message.from_user.id}")
 
-# ========================================
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
     if not is_cafe_open():
@@ -122,7 +120,7 @@ async def drink_selected(message: types.Message, state: FSMContext):
     
     drink = message.text
     price = MENU[drink]
-    await state.finish()
+    await state.finish()  # ✅ ОЧИСТКА ПЕРЕД НОВЫМ
     await state.update_data(drink=drink, price=price)
     await OrderStates.waiting_for_quantity.set()
     
@@ -131,9 +129,7 @@ async def drink_selected(message: types.Message, state: FSMContext):
         f"📝 <b>Сколько порций?</b>",
         reply_markup=get_quantity_keyboard()
     )
-    logger.info(f"🥤 Выбрано: {drink}")
 
-# ========================================
 @dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
     if message.text == "🔙 Отмена":
@@ -147,7 +143,6 @@ async def process_quantity(message: types.Message, state: FSMContext):
             data = await state.get_data()
             total = data['price'] * qty
             
-            # ✅ СОХРАНЯЕМ ПОЛНЫЙ ЗАКАЗ
             await state.update_data(
                 drink=data['drink'], 
                 price=data['price'],
@@ -155,7 +150,6 @@ async def process_quantity(message: types.Message, state: FSMContext):
                 total=total
             )
             
-            # ✅ ПЕРЕХОДИМ к ПОДТВЕРЖДЕНИЮ
             await OrderStates.waiting_for_confirmation.set()
             
             await message.answer(
@@ -178,13 +172,11 @@ async def process_quantity(message: types.Message, state: FSMContext):
         reply_markup=get_quantity_keyboard()
     )
 
-# ========================================
 @dp.message_handler(state=OrderStates.waiting_for_confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
     data = await state.get_data()
     
     if message.text == "✅ Подтвердить":
-        # ✅ ФИНАЛЬНЫЙ ЗАКАЗ → АДМИН
         await send_order_to_admin({
             'user_id': message.from_user.id,
             'first_name': message.from_user.first_name or "Гость",
@@ -194,6 +186,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             'total': data['total']
         })
         
+        # ✅ ПРИНУДИТЕЛЬНАЯ ОЧИСТКА + НОВАЯ КЛАВИАТУРА
         await state.finish()
         await message.answer(
             f"🎉 <b>ЗАКАЗ #{message.from_user.id} ПРИНЯТ!</b>\n\n"
@@ -201,10 +194,11 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             f"📊 {data['quantity']} порций\n"
             f"💰 <b>{data['total']} ₽</b>\n\n"
             f"📞 {CAFE_PHONE}\n"
-            f"✅ Готовим! ⏳",
-            reply_markup=get_main_keyboard()
+            f"✅ Готовим! ⏳\n\n"
+            f"<i>Можете сделать новый заказ ☕</i>",
+            reply_markup=get_main_keyboard()  # ✅ ПРИНУДИТЕЛЬНО
         )
-        logger.info(f"✅ Заказ {data['total']}₽ подтверждён")
+        logger.info(f"✅ Заказ {data['total']}₽")
         
     elif message.text == "🔙 Меню":
         await state.finish()
@@ -220,8 +214,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
 # ========================================
 @dp.message_handler(text=["☕ Меню", "📞 Позвонить", "⏰ Часы работы", "ℹ️ О боте"])
 async def menu_actions(message: types.Message, state: FSMContext):
-    await state.finish()
-    
+    await state.finish()  # ✅ ВСЕГДА ОЧИСТКА
     if "📞" in message.text:
         await message.answer(
             f"📞 <b>{CAFE_NAME}:</b>\n<code>{CAFE_PHONE}</code>\n\nЗакажите ☕:",
@@ -237,19 +230,18 @@ async def menu_actions(message: types.Message, state: FSMContext):
             f"🤖 <b>CAFEBOTIFY — 2990₽/мес</b>\n\n"
             f"✅ Цифровое меню\n"
             f"✅ Заказы 24/7\n"
-            f"✅ Уведомления админу\n"
             f"✅ Подтверждение заказа\n\n"
             f"🎯 {CAFE_NAME}",
             reply_markup=get_main_keyboard()
         )
-    else:  # ☕ Меню
+    else:
         menu_text = f"🍽️ <b>{CAFE_NAME}:</b>\n\n"
         for drink, price in MENU.items():
             menu_text += f"{drink} — <b>{price}₽</b>\n"
         await message.answer(menu_text, reply_markup=get_menu_keyboard())
 
 # ========================================
-@dp.message_handler()
+@dp.message_handler()  # ✅ CATCH-ALL В КОНЦЕ
 async def unknown(message: types.Message, state: FSMContext):
     await state.finish()
     await message.answer(
@@ -273,12 +265,11 @@ async def send_order_to_admin(order_data):
         await bot.send_message(ADMIN_ID, text)
         logger.info("✅ Админ уведомлён")
     except Exception as e:
-        logger.error(f"❌ Админ не уведомлён: {e}")
+        logger.error(f"❌ Админ: {e}")
 
 # ========================================
-# ✅ WEBHOOK + HEALTHCHECK (Render GREEN)
 async def webhook_handler(request):
-    logger.info("🔥 WEBHOOK получен")
+    logger.info("🔥 WEBHOOK")
     try:
         update = await request.json()
         Bot.set_current(bot)
@@ -286,7 +277,7 @@ async def webhook_handler(request):
         await dp.process_update(types.Update(**update))
         return web.Response(text="OK", status=200)
     except Exception as e:
-        logger.error(f"❌ Webhook ошибка: {e}")
+        logger.error(f"❌ Webhook: {e}")
         return web.Response(text="OK", status=200)
 
 async def healthcheck(request):
@@ -294,13 +285,11 @@ async def healthcheck(request):
 
 async def on_startup(_):
     await bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"✅ WEBHOOK установлен: {WEBHOOK_URL}")
-    logger.info(f"🎬 v8.4 — {CAFE_NAME} | {len(MENU)} позиций")
-    logger.info(f"📞 Телефон: {CAFE_PHONE}")
+    logger.info(f"✅ WEBHOOK: {WEBHOOK_URL}")
+    logger.info(f"🎬 v8.5 — {CAFE_NAME} | {len(MENU)} позиций")
 
 async def on_shutdown(_):
     await bot.delete_webhook()
-    logger.info("🛑 Webhook удалён")
 
 # ========================================
 app = web.Application()
@@ -310,5 +299,5 @@ app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == '__main__':
-    logger.info(f"🚀 Запуск v8.4 — {CAFE_NAME}")
+    logger.info(f"🚀 v8.5 {CAFE_NAME}")
     web.run_app(app, host=HOST, port=PORT)
