@@ -1,190 +1,230 @@
-import logging
 import os
-from aiogram import Bot, Dispatcher, types
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
-from aiogram.utils.exceptions import CantParseEntities
+import aiohttp
+from aiohttp import web
+import aioschedule as schedule
+import pytz
 
-# 🛠️ ЛОГИ
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔥 ENV
+# ENV переменные
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1471275603"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", 1471275603))
 CAFE_PHONE = os.getenv("CAFE_PHONE", "+7 989 273-67-56")
 
-if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN обязателен!")
-    exit(1)
+# Инициализация бота
+bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-logger.info(f"🚀 START | ADMIN: {ADMIN_ID} | PHONE: {CAFE_PHONE}")
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
-
-# 🍽️ МЕНЮ
-CAFE_MENU = {
+# Меню кафе
+MENU = {
     "☕ Капучино": 250,
     "🥛 Латте": 270, 
-    "🍵 Чай": 180,
-    "⚡ Эспрессо": 200
+    "🍵 Чай": 180
 }
 
-MAIN_MENU = ReplyKeyboardMarkup(
-    resize_keyboard=True,
-    keyboard=[
-        [KeyboardButton("☕ Капучино — 250₽")],
-        [KeyboardButton("🥛 Латте — 270₽")],
-        [KeyboardButton("🔧 Настроить уведомления")]
-    ]
-)
-
+# Состояния FSM
 class OrderStates(StatesGroup):
-    waiting_quantity = State()
-    waiting_confirm = State()
+    waiting_for_drink = State()
+    waiting_for_quantity = State()
 
-# 🔔 START
-@dp.message_handler(commands=['start', 'help'])
-async def start_cmd(message: types.Message):
-    logger.info(f"✅ START от {message.from_user.id}")
-    await message.reply(
-        "☕ *Добро пожаловать в Кофейню!* ☕\n\n"
-        "Выберите товар из меню:",
-        reply_markup=MAIN_MENU,
-        parse_mode="Markdown"
+PORT = int(os.environ.get("PORT", 10000))
+HOST = "0.0.0.0"
+WEBHOOK_URL = f"https://chatbotify-2tjd.onrender.com/webhook"
+WEBAPP = None
+
+# === ОБРАБОТЧИКИ БОТА ===
+@dp.message_handler(commands=['start'])
+async def start_handler(message: types.Message):
+    """Стартовое сообщение с меню"""
+    await message.answer(
+        "👋 Добро пожаловать в CafeBotify!\n\n"
+        "Выберите напиток из меню:",
+        reply_markup=get_menu_keyboard()
     )
 
-# 🔧 ДЕМО
-@dp.message_handler(lambda m: "Настроить уведомления" in m.text)
-async def demo_click(message: types.Message):
-    logger.info(f"🎉 ДЕМО от {message.from_user.id}")
-    await bot.send_message(
-        ADMIN_ID,
-        f"🎉 *НОВЫЙ КЛИЕНТ!*\n🆔 `{message.from_user.id}`\n👤 `{message.from_user.username or 'no_username'}`",
-        parse_mode="Markdown"
-    )
-    await message.reply("✅ Уведомления настроены! Тестируйте меню ☕", reply_markup=MAIN_MENU)
-
-# 🛒 ЗАКАЗЫ
-@dp.message_handler(lambda m: any(item in m.text for item in CAFE_MENU.keys()))
-async def process_order(message: types.Message, state: FSMContext):
-    logger.info(f"☕ ЗАКАЗ '{message.text}' от {message.from_user.id}")
+@dp.message_handler(lambda message: message.text in MENU.keys())
+async def drink_selected(message: types.Message, state: FSMContext):
+    """Выбор напитка"""
+    drink = message.text
+    price = MENU[drink]
     
-    for item, price in CAFE_MENU.items():
-        if item in message.text:
-            await state.update_data(item=item, price=price)
-            await message.reply(
-                f"*{item}* — {price}₽\n\nСколько порций?",
-                reply_markup=ReplyKeyboardMarkup(
-                    resize_keyboard=True, one_time_keyboard=True,
-                    keyboard=[["1", "2", "3"], ["❌ Отмена"]]
-                ),
-                parse_mode="Markdown"
-            )
-            await OrderStates.waiting_quantity.set()
-            return
+    await state.update_data(drink=drink, price=price)
+    await OrderStates.waiting_for_quantity.set()
+    
+    await message.answer(
+        f"Вы выбрали <b>{drink}</b>\n💰 Цена: <b>{price}₽</b>\n\n"
+        "Сколько порций хотите заказать?",
+        reply_markup=get_quantity_keyboard()
+    )
 
-# 🔢 КОЛИЧЕСТВО
-@dp.message_handler(state=OrderStates.waiting_quantity)
+@dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
-    if message.text == "❌ Отмена":
-        await state.finish()
-        await message.reply("❌ Заказ отменён", reply_markup=MAIN_MENU)
-        return
-    
+    """Обработка количества"""
     try:
-        qty = int(message.text)
+        quantity = int(message.text)
+        if quantity <= 0:
+            await message.answer("❌ Количество должно быть больше 0")
+            return
+            
         data = await state.get_data()
-        total = data['price'] * qty
+        drink = data['drink']
+        price = data['price']
+        total = price * quantity
         
-        await state.update_data(quantity=qty, total=total)
-        await message.reply(
-            f"*Ваш заказ:*\n`{data['item']}` ×{qty}\n*Итого:* `{total}₽`\n\nПодтвердить?",
-            reply_markup=ReplyKeyboardMarkup(
-                resize_keyboard=True, one_time_keyboard=True,
-                keyboard=[["✅ Да", "❌ Нет"]]
-            ),
-            parse_mode="Markdown"
-        )
-        await OrderStates.waiting_confirm.set()
-    except:
-        await message.reply("❌ Введите число 1-3 или Отмена")
-
-# ✅ ПОДТВЕРЖДЕНИЕ
-@dp.message_handler(state=OrderStates.waiting_confirm)
-async def process_confirm(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    
-    if "Да" in message.text:
-        # АДМИНУ
-        admin_msg = (
-            f"☕ *НОВЫЙ ЗАКАЗ!*\n\n"
-            f"`{data['item']}` ×{data['quantity']}\n"
-            f"*Сумма:* `{data['total']}₽`\n\n"
-            f"👤 {message.from_user.first_name}\n"
-            f"🆔 `{message.from_user.id}`\n"
-            f"📞 {CAFE_PHONE}"
-        )
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
-        logger.info(f"✅ ЗАКАЗ {data['total']}₽ от {message.from_user.id}")
+        # Сохраняем заказ
+        order_data = {
+            'user_id': message.from_user.id,
+            'username': message.from_user.username or "Не указан",
+            'first_name': message.from_user.first_name,
+            'drink': drink,
+            'quantity': quantity,
+            'total': total,
+            'phone': CAFE_PHONE
+        }
         
-        # КЛИЕНТУ
-        await message.reply(
-            f"🎉 *Заказ #{data['total']}₽ принят!*\n"
-            f"📞 Звоните: {CAFE_PHONE}",
-            reply_markup=MAIN_MENU,
-            parse_mode="Markdown"
+        await state.finish()
+        
+        # Отправляем админу
+        await send_order_to_admin(order_data, message.chat.id)
+        
+        # Подтверждение пользователю
+        await message.answer(
+            f"✅ Заказ принят!\n\n"
+            f"🥤 Напиток: <b>{drink}</b>\n"
+            f"📊 Количество: <b>{quantity}</b>\n"
+            f"💰 Итого: <b>{total}₽</b>\n\n"
+            f"📞 Позвоним для подтверждения: <b>{CAFE_PHONE}</b>\n\n"
+            "Спасибо за заказ! ☕",
+            reply_markup=get_main_keyboard()
         )
-    else:
-        await message.reply("❌ Заказ отменён", reply_markup=MAIN_MENU)
+        
+    except ValueError:
+        await message.answer("❌ Введите число (например: 2)")
+
+@dp.message_handler(commands=['menu'])
+async def show_menu(message: types.Message):
+    """Показать меню"""
+    await message.answer(
+        "🍽️ <b>Меню кафе:</b>\n\n" + 
+        "\n".join([f"{k} - {v}₽" for k,v in MENU.items()]),
+        reply_markup=get_menu_keyboard()
+    )
+
+# === Клавиатуры ===
+def get_menu_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for drink in MENU.keys():
+        keyboard.add(drink)
+    return keyboard
+
+def get_quantity_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for i in range(1, 6):
+        keyboard.add(str(i))
+    keyboard.add("🔙 Назад")
+    return keyboard
+
+def get_main_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add("☕ Меню", "📞 Позвонить")
+    return keyboard
+
+# === АДМИН ===
+async def send_order_to_admin(order_data, user_chat_id):
+    """Отправка заказа админу"""
+    message_text = (
+        f"🔔 <b>Новый заказ!</b>\n\n"
+        f"👤 Пользователь: {order_data['first_name']} (@{order_data['username']})\n"
+        f"🆔 ID: <code>{order_data['user_id']}</code>\n\n"
+        f"🥤 Напиток: <b>{order_data['drink']}</b>\n"
+        f"📊 Количество: <b>{order_data['quantity']}</b>\n"
+        f"💰 Сумма: <b>{order_data['total']}₽</b>\n\n"
+        f"📞 Связаться: {order_data['phone']}"
+    )
     
-    await state.finish()
+    await bot.send_message(ADMIN_ID, message_text)
 
-# 🛑 ОТМЕНА В ЛЮБОМ СОСТОЯНИИ
-@dp.message_handler(lambda m: m.text == "❌ Отмена", state="*")
-async def cancel_any(message: types.Message, state: FSMContext):
-    await state.finish()
-    await message.reply("❌ Отменено", reply_markup=MAIN_MENU)
-
-# 🛠️ ЛЮБЫЕ ДРУГИЕ СООБЩЕНИЯ
-@dp.message_handler(state="*")
-async def unknown(message: types.Message):
-    logger.info(f"📨 '{message.text}' от {message.from_user.id}")
-    await message.reply("👆 Нажмите кнопку из меню ☕", reply_markup=MAIN_MENU)
-
-# 🛑 ОШИБКИ
-@dp.errors_handler()
-async def errors_handler(update, exception):
-    logger.error(f"❌ ОШИБКА: {exception}")
-    if isinstance(exception, CantParseEntities):
-        logger.info("⚠️ Markdown ошибка - игнор")
-    return True
-
-# 🚀 WEBHOOK ДЛЯ RENDER
+# === WEBHOOK SERVER ===
 async def on_startup(dp):
-    webhook_url = "https://chatbotify-2tjd.onrender.com/webhook"
-    # УДАЛЯЕМ старый webhook
+    """Запуск webhook"""
+    logger.info("🚀 ЗАПУСК WEBHOOK SERVER...")
+    logger.info(f"🚀 START | ADMIN: {ADMIN_ID} | PHONE: {CAFE_PHONE}")
+    
+    # Очищаем старые webhook
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("🧹 Старые сообщения удалены")
-    # УСТАНАВЛИВАЕМ новый
-    await bot.set_webhook(webhook_url)
-    logger.info(f"✅ WEBHOOK: {webhook_url}")
+    
+    # Устанавливаем новый webhook
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"✅ WEBHOOK: {WEBHOOK_URL}")
+    
+    # Тестовое сообщение админу
+    try:
+        await bot.send_message(ADMIN_ID, "🤖 CafeBotify LIVE на Render.com!")
+        logger.info("✅ Тестовое сообщение админу отправлено")
+    except:
+        logger.warning("⚠️ Не удалось отправить тестовое сообщение админу")
 
 async def on_shutdown(dp):
+    """Остановка"""
+    logger.info("🛑 Остановка webhook...")
     await bot.delete_webhook()
-    logger.info("🔴 BOT STOPPED")
+    await dp.storage.close()
+    await bot.session.close()
+
+# Aiohttp webhook handler
+async def webhook_handler(request):
+    """Обработчик webhook запросов от Telegram"""
+    try:
+        update = await request.json()
+        # Отдаем диспетчеру aiogram
+        await dp.process_update(types.Update(**update))
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return web.Response(text="Error", status=500)
+
+# Healthcheck для Render
+async def healthcheck(request):
+    """Healthcheck endpoint для Render"""
+    return web.Response(text="OK", status=200)
+
+# Создание aiohttp приложения
+def create_app():
+    global WEBAPP
+    app = web.Application()
+    
+    # Роуты
+    app.router.add_post('/webhook', webhook_handler)
+    app.router.add_get('/', healthcheck)
+    
+    WEBAPP = app
+    return app
+
+# === ГЛАВНАЯ ФУНКЦИЯ ===
+async def on_app_startup(app):
+    """Старт всего приложения"""
+    await on_startup(dp)
+    logger.info(f"✅ Сервер запущен на {HOST}:{PORT}")
 
 if __name__ == '__main__':
-    logger.info("🚀 ЗАПУСК WEBHOOK SERVER...")
-    executor.start_webhook(
-        dispatcher=dp,
-        webhook_path='/webhook',
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,  # ← ПРОПУСТИТЬ 32 старых сообщения!
-        host='0.0.0.0',
-        port=int(os.getenv("PORT", 10000))
+    # Создаем aiohttp app
+    app = create_app()
+    
+    # Запускаем на правильном порту для Render
+    web.run_app(
+        app, 
+        host=HOST, 
+        port=PORT,
+        access_log=logger
     )
