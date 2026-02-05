@@ -17,7 +17,8 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # aiogram3 webhook [page:1]
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,21 +68,14 @@ MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
-
-# Используем один секрет и в URL-path, и как secret_token (заголовок Telegram) — можно оставить так для MVP. [page:1]
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
-
 HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "chatbotify-2tjd.onrender.com")
 PORT = int(os.getenv("PORT", 10000))
 
 WEBHOOK_PATH = f"/{WEBHOOK_SECRET}/webhook"
 WEBHOOK_URL = f"https://{HOSTNAME}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-storage = RedisStorage.from_url(REDIS_URL)
-dp = Dispatcher(storage=storage)
 router = Router()
-dp.include_router(router)
 
 
 class OrderStates(StatesGroup):
@@ -276,7 +270,7 @@ async def process_confirmation(message: Message, state: FSMContext):
             f"<code>{CAFE_PHONE}</code>"
         )
 
-        await bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
+        await message.bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
 
         await message.answer(
             f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
@@ -324,11 +318,10 @@ async def stats_command(message: Message):
         await message.answer("❌ Ошибка статистики")
 
 
-# ВАЖНО: имя аргумента именно bot, как в примере документации. [page:1]
 async def on_startup(bot: Bot) -> None:
     logger.info("🚀 Запуск бота...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
-    logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
+    logger.info(f"🔗 Webhook (target): {WEBHOOK_URL}")
 
     try:
         r_test = redis.from_url(REDIS_URL)
@@ -338,27 +331,19 @@ async def on_startup(bot: Bot) -> None:
     except Exception as e:
         logger.error(f"❌ Redis: {e}")
 
+    # КЛЮЧЕВОЙ ФИКС: всегда переустанавливаем webhook с secret_token,
+    # иначе Telegram может слать без заголовка и ты снова получишь 401.
     try:
         current_webhook = await bot.get_webhook_info()
         logger.info(f"Текущий webhook: {current_webhook.url}")
 
-        # Ставим webhook + secret_token (заголовок), а path у тебя и так уникальный. [page:1]
-        if current_webhook.url != WEBHOOK_URL:
-            await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
-            logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
-        else:
-            logger.info("ℹ️ Webhook уже установлен")
+        await bot.set_webhook(
+            WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET,
+        )
+        logger.info("✅ Webhook (re)set выполнен")
     except Exception as e:
         logger.error(f"❌ Webhook ошибка: {e}")
-
-
-async def on_shutdown(app: web.Application):
-    try:
-        await bot.delete_webhook()
-    except Exception:
-        pass
-    await storage.close()
-    logger.info("🛑 Бот остановлен")
 
 
 async def main():
@@ -369,7 +354,12 @@ async def main():
         logger.error("❌ REDIS_URL не найден!")
         return
 
-    dp.startup.register(on_startup)  # webhook init на старте [page:1]
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    storage = RedisStorage.from_url(REDIS_URL)
+    dp = Dispatcher(storage=storage)
+    dp.include_router(router)
+
+    dp.startup.register(on_startup)
 
     app = web.Application()
 
@@ -378,18 +368,31 @@ async def main():
 
     app.router.add_get("/", healthcheck)
 
-    # Регистрируем webhook обработчик aiogram (вместо ручного request.json -> feed_update). [page:1]
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-        secret_token=WEBHOOK_SECRET,  # проверка заголовка Telegram [page:1]
+        secret_token=WEBHOOK_SECRET,
         handle_in_background=True,
     ).register(app, path=WEBHOOK_PATH)
 
-    # ВАЖНО: передаём bot=bot, чтобы startup-хуки могли получить bot. [page:0]
     setup_application(app, dp, bot=bot)
 
-    app.on_shutdown.append(on_shutdown)
+    async def _on_shutdown(a: web.Application):
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
+        try:
+            await storage.close()
+        except Exception:
+            pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+        logger.info("🛑 Бот остановлен")
+
+    app.on_shutdown.append(_on_shutdown)
 
     runner = web.AppRunner(app)
     await runner.setup()
