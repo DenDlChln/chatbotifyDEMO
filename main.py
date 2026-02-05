@@ -17,11 +17,11 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # FIX [page:1]
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # aiogram3 webhook [page:1]
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -39,19 +39,21 @@ def load_config() -> Dict[str, Any]:
             "☕ Капучино": 250,
             "🥛 Латте": 270,
             "🍵 Чай": 180,
-            "⚡ Эспрессо": 200
-        }
+            "⚡ Эспрессо": 200,
+        },
     }
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
+        with open("config.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            config = data.get('cafe', {})
-            default_config.update({
-                'name': config.get('name', default_config['name']),
-                'phone': config.get('phone', default_config['phone']),
-                'admin_chat_id': config.get('admin_chat_id', default_config['admin_chat_id']),
-                'menu': config.get('menu', default_config['menu'])
-            })
+            config = data.get("cafe", {})
+            default_config.update(
+                {
+                    "name": config.get("name", default_config["name"]),
+                    "phone": config.get("phone", default_config["phone"]),
+                    "admin_chat_id": config.get("admin_chat_id", default_config["admin_chat_id"]),
+                    "menu": config.get("menu", default_config["menu"]),
+                }
+            )
     except Exception:
         pass
     return default_config
@@ -65,7 +67,10 @@ MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
+
+# Используем один секрет и в URL-path, и как secret_token (заголовок Telegram) — можно оставить так для MVP. [page:1]
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
+
 HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "chatbotify-2tjd.onrender.com")
 PORT = int(os.getenv("PORT", 10000))
 
@@ -108,7 +113,7 @@ def create_menu_keyboard() -> ReplyKeyboardMarkup:
 def create_info_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📞 Позвонить"), KeyboardButton(text="⏰ Часы работы")]],
-        resize_keyboard=True
+        resize_keyboard=True,
     )
 
 
@@ -116,10 +121,10 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="1️⃣"), KeyboardButton(text="2️⃣"), KeyboardButton(text="3️⃣")],
-            [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text="🔙 Отмена")]
+            [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text="🔙 Отмена")],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True
+        one_time_keyboard=True,
     )
 
 
@@ -127,7 +132,7 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Подтвердить"), KeyboardButton(text="Меню")]],
         resize_keyboard=True,
-        one_time_keyboard=True
+        one_time_keyboard=True,
     )
 
 
@@ -163,7 +168,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(
             f"<b>{CAFE_NAME}</b>\n\n🕐 <i>Московское время: {msk_time}</i>\n🏪 {get_work_status()}\n\n"
             f"☕ <b>Выберите напиток:</b>",
-            reply_markup=create_menu_keyboard()
+            reply_markup=create_menu_keyboard(),
         )
     else:
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
@@ -198,7 +203,7 @@ async def drink_selected(message: Message, state: FSMContext):
 
     await message.answer(
         f"🥤 <b>{drink}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
-        reply_markup=create_quantity_keyboard()
+        reply_markup=create_quantity_keyboard(),
     )
 
 
@@ -208,7 +213,7 @@ async def process_quantity(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
             "❌ Заказ отменён",
-            reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard()
+            reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard(),
         )
         return
 
@@ -224,7 +229,7 @@ async def process_quantity(message: Message, state: FSMContext):
 
             await message.answer(
                 f"🥤 <b>{drink}</b> × {quantity}\n💰 Итого: <b>{total} ₽</b>\n\n✅ Правильно?",
-                reply_markup=create_confirm_keyboard()
+                reply_markup=create_confirm_keyboard(),
             )
         else:
             await message.answer("❌ Выберите от 1 до 5", reply_markup=create_quantity_keyboard())
@@ -242,14 +247,17 @@ async def process_confirmation(message: Message, state: FSMContext):
 
         try:
             r_client = await get_redis_client()
-            await r_client.hset(order_id, mapping={
-                "user_id": message.from_user.id,
-                "username": message.from_user.username or "N/A",
-                "drink": drink,
-                "quantity": quantity,
-                "total": total,
-                "timestamp": datetime.now().isoformat()
-            })
+            await r_client.hset(
+                order_id,
+                mapping={
+                    "user_id": message.from_user.id,
+                    "username": message.from_user.username or "N/A",
+                    "drink": drink,
+                    "quantity": quantity,
+                    "total": total,
+                    "timestamp": datetime.now().isoformat(),
+                },
+            )
             await r_client.expire(order_id, 86400)
             await r_client.incr("stats:total_orders")
             await r_client.incr(f"stats:drink:{drink}")
@@ -267,6 +275,7 @@ async def process_confirmation(message: Message, state: FSMContext):
             f"<b>{total} ₽</b>\n\n"
             f"<code>{CAFE_PHONE}</code>"
         )
+
         await bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
 
         await message.answer(
@@ -274,7 +283,7 @@ async def process_confirmation(message: Message, state: FSMContext):
             f"🥤 {drink} × {quantity}\n"
             f"💰 {total}₽\n\n"
             f"📞 {CAFE_PHONE}\n⏳ Готовим!",
-            reply_markup=create_menu_keyboard()
+            reply_markup=create_menu_keyboard(),
         )
         await state.clear()
         return
@@ -315,7 +324,8 @@ async def stats_command(message: Message):
         await message.answer("❌ Ошибка статистики")
 
 
-async def on_startup(bot_obj: Bot):
+# ВАЖНО: имя аргумента именно bot, как в примере документации. [page:1]
+async def on_startup(bot: Bot) -> None:
     logger.info("🚀 Запуск бота...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
     logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
@@ -329,12 +339,12 @@ async def on_startup(bot_obj: Bot):
         logger.error(f"❌ Redis: {e}")
 
     try:
-        current_webhook = await bot_obj.get_webhook_info()
+        current_webhook = await bot.get_webhook_info()
         logger.info(f"Текущий webhook: {current_webhook.url}")
+
+        # Ставим webhook + secret_token (заголовок), а path у тебя и так уникальный. [page:1]
         if current_webhook.url != WEBHOOK_URL:
-            # Можно также передать secret_token=WEBHOOK_SECRET (для проверки запросов),
-            # но у тебя секрет уже в PATH, это ок для MVP.
-            await bot_obj.set_webhook(WEBHOOK_URL)
+            await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
             logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
         else:
             logger.info("ℹ️ Webhook уже установлен")
@@ -359,8 +369,7 @@ async def main():
         logger.error("❌ REDIS_URL не найден!")
         return
 
-    # startup hook в стиле aiogram 3 (рекомендовано) [page:0][page:1]
-    dp.startup.register(on_startup)
+    dp.startup.register(on_startup)  # webhook init на старте [page:1]
 
     app = web.Application()
 
@@ -369,8 +378,15 @@ async def main():
 
     app.router.add_get("/", healthcheck)
 
-    # FIX: вместо ручного webhook_handler используем SimpleRequestHandler [page:0][page:1]
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    # Регистрируем webhook обработчик aiogram (вместо ручного request.json -> feed_update). [page:1]
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=WEBHOOK_SECRET,  # проверка заголовка Telegram [page:1]
+        handle_in_background=True,
+    ).register(app, path=WEBHOOK_PATH)
+
+    # ВАЖНО: передаём bot=bot, чтобы startup-хуки могли получить bot. [page:0]
     setup_application(app, dp, bot=bot)
 
     app.on_shutdown.append(on_shutdown)
