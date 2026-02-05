@@ -2,11 +2,10 @@ import os
 import json
 import logging
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher.webhook import get_new_configured_app
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -57,7 +56,7 @@ WEBAPP_PORT = int(os.getenv('PORT', 10000))
 WEBHOOK_PATH = f'/{BOT_TOKEN}'
 
 # ========================================
-bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
+bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
@@ -134,6 +133,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
+    logger.info(f"🥤 {message.text} от {message.from_user.id}")
+    
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
         return
@@ -156,6 +157,8 @@ async def drink_selected(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderStates.waiting_for_quantity)
 async def process_quantity(message: types.Message, state: FSMContext):
+    logger.info(f"📊 {message.text} от {message.from_user.id}")
+    
     if message.text == "🔙 Отмена":
         await state.finish()
         await message.answer("❌ Заказ отменён ☕", reply_markup=get_correct_keyboard())
@@ -189,6 +192,8 @@ async def process_quantity(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=OrderStates.waiting_for_confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
+    logger.info(f"✅ {message.text} от {message.from_user.id}")
+    
     if "Подтвердить" in message.text:
         data = await state.get_data()
         order_data = {
@@ -214,10 +219,9 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         )
         
         await send_order_to_admin(order_data)
-    else:
-        await state.finish()
-        await message.answer("🔙 В меню ☕", reply_markup=get_correct_keyboard())
+    
     await state.finish()
+    await message.answer("🔙 В меню ☕", reply_markup=get_correct_keyboard())
 
 async def send_order_to_admin(order_data):
     msk_time = get_moscow_time().strftime("%H:%M")
@@ -257,6 +261,8 @@ async def work_hours(message: types.Message):
 @dp.message_handler()
 async def echo(message: types.Message, state: FSMContext):
     await state.finish()
+    logger.info(f"❓ Неизвестное: '{message.text}' от {message.from_user.id}")
+    
     if is_cafe_open():
         await message.answer(
             f"❓ <b>{CAFE_NAME}</b>\\n\\n"
@@ -268,32 +274,36 @@ async def echo(message: types.Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
 # ========================================
-async def on_startup(app):
-    webhook_url = f"https://{WEBAPP_HOST}/{WEBHOOK_PATH}"
+async def on_startup(dp):
+    webhook_url = f"https://{WEBAPP_HOST}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url)
-    logger.info(f"✅ WEBHOOK: {webhook_url}")
+    info = await bot.get_webhook_info()
+    logger.info(f"✅ WEBHOOK: {info.url}")
     msk_time = get_moscow_time().strftime("%H:%M")
-    logger.info(f"🚀 v9.2 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
+    logger.info(f"🚀 v9.3 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
                f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
     logger.info("🏥 Healthcheck OK | 💰 START 2990₽/мес Готово! 🚀")
 
-# ========================================
-async def healthcheck(request):
-    return web.json_response({"status": "CafeBotify v9.2 LIVE ✅"}, status=200)
+async def on_shutdown(dp):
+    await bot.delete_webhook()
+    await dp.storage.close()
 
-async def main():
-    # ✅ ЕДИНЫЙ aiohttp app для Render + Aiogram
-    app = get_new_configured_app(dispatcher=dp, path=WEBHOOK_PATH)
+async def healthcheck(request):
+    return web.Response(text="CafeBotify v9.3 LIVE ✅", status=200)
+
+# ========================================
+if __name__ == '__main__':
+    logger.info(f"🎬 v9.3 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
+    
+    app = web.Application()
     app.router.add_get('/', healthcheck)
     
-    app.on_startup.append(on_startup)
-    
-    # ✅ Render требует 0.0.0.0:PORT
-    host = '0.0.0.0'
-    port = WEBAPP_PORT
-    
-    logger.info(f"🎬 v9.2 START — {CAFE_NAME} | HOST: {host}:{port}")
-    web.run_app(app, host=host, port=port)
-
-if __name__ == '__main__':
-    asyncio.run(main())
+    executor.start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host='0.0.0.0',
+        port=WEBAPP_PORT,
+    )
