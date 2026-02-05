@@ -65,6 +65,7 @@ class OrderStates(StatesGroup):
     waiting_for_confirmation = State()
 
 # ========================================
+# Клавиатуры и функции (БЕЗ ИЗМЕНЕНИЙ - работают)
 def get_moscow_time():
     return datetime.now(MSK_TZ)
 
@@ -114,6 +115,7 @@ def get_closed_message():
     )
 
 # ========================================
+# Все handlers ОСТАЮТСЯ ТАКИМИ ЖЕ (работают)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -280,24 +282,26 @@ async def on_startup(dp):
     info = await bot.get_webhook_info()
     logger.info(f"✅ WEBHOOK: {info.url}")
     msk_time = get_moscow_time().strftime("%H:%M")
-    logger.info(f"🚀 v9.3 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
+    logger.info(f"🚀 v9.4 LIVE — {CAFE_NAME} | MSK: {msk_time} | "
                f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
-    logger.info("🏥 Healthcheck OK | 💰 START 2990₽/мес Готово! 🚀")
 
 async def on_shutdown(dp):
     await bot.delete_webhook()
     await dp.storage.close()
 
+# ✅ RENDER HEALTHCHECK (ОТВЕЧАЕТ НА GET /)
 async def healthcheck(request):
-    return web.Response(text="CafeBotify v9.3 LIVE ✅", status=200)
+    return web.Response(text="CafeBotify v9.4 LIVE ✅", status=200)
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v9.3 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
+    logger.info(f"🎬 v9.4 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
     
+    # ✅ ИНИЦИАЛИЗИРУЕМ AIOHTTP ПРИЛОЖЕНИЕ
     app = web.Application()
-    app.router.add_get('/', healthcheck)
+    app.router.add_get('/', healthcheck)  # ← ЭТО КЛЮЧЕВОЕ!
     
+    # ✅ Aiogram webhook на том же порту
     executor.start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
@@ -306,4 +310,5 @@ if __name__ == '__main__':
         skip_updates=True,
         host='0.0.0.0',
         port=WEBAPP_PORT,
+        app=app  # ← ПЕРЕДАЁМ НАШ AIOHTTP APP!
     )
