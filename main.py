@@ -297,7 +297,14 @@ async def on_shutdown(dp):
 
 # ========================================
 if __name__ == '__main__':
-    logger.info(f"🎬 v8.20 WEBHOOK — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
+    logger.info(f"🎬 v8.21 WEBHOOK — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
+    
+    # ✅ RENDER HEALTHCHECK + aiogram webhook
+    async def healthcheck(request):
+        return web.Response(text="CafeBotify v8.21 LIVE ✅", status=200)
+    
+    app = web.Application()
+    app.router.add_get('/', healthcheck)
     
     executor.start_webhook(
         dispatcher=dp,
@@ -308,3 +315,4 @@ if __name__ == '__main__':
         host='0.0.0.0',
         port=WEBAPP_PORT,
     )
+
