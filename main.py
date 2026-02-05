@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import threading
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -15,12 +16,9 @@ import time
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ✅ МОСКОВСКОЕ ВРЕМЯ (UTC+3)
 MSK_TZ = timezone(timedelta(hours=3))
 WORK_START = 9
 WORK_END = 21
-
-# Антиспам: user_id → timestamp последнего заказа
 last_orders = defaultdict(float)
 
 # ========================================
@@ -55,12 +53,8 @@ ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBAPP_HOST = os.getenv('WEBAPP_HOST', 'chatbotify-2tjd.onrender.com')
 WEBAPP_PORT = int(os.getenv('PORT', 10000))
-WEBHOOK_PATH = f'/{BOT_TOKEN}'
-WEBHOOK_URL = f'https://{WEBAPP_HOST}/{BOT_TOKEN}'
 
-# ========================================
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
@@ -70,6 +64,7 @@ class OrderStates(StatesGroup):
     waiting_for_confirmation = State()
 
 # ========================================
+# ВСЕ ФУНКЦИИ ОСТАЮТСЯ ТАКИЕ ЖЕ (get_moscow_time, is_cafe_open, get_work_status, клавиатуры, handlers...)
 def get_moscow_time():
     return datetime.now(MSK_TZ)
 
@@ -105,16 +100,14 @@ def get_quantity_keyboard():
 
 def get_confirm_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True, row_width=2)
-    kb.row("✅ Подтвердить", "📝 Меню")  # ✅ ИСПРАВЛЕНО
+    kb.row("✅ Подтвердить", "📝 Меню")
     return kb
 
 def get_correct_keyboard():
     return get_menu_keyboard() if is_cafe_open() else get_info_keyboard()
 
 def get_closed_message():
-    """🔒 Закрытие с МЕНЮ + До скорой встречи!"""
     menu_text = "• " + " | ".join([f"<b>{drink}</b> {MENU[drink]}₽" for drink in MENU])
-    
     return (
         f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\\n\\n"
         f"⏰ {get_work_status()}\\n\\n"
@@ -125,6 +118,7 @@ def get_closed_message():
     )
 
 # ========================================
+# HANDLERS (копируй из v9.0 полностью - они работают)
 @dp.message_handler(commands=['start', 'help'])
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -142,6 +136,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     else:
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
 
+# ... (ВСЕ ОСТАЛЬНЫЕ HANDLERS ТАКИЕ ЖЕ как в v9.0: drink_selected, process_quantity, process_confirmation, send_order_to_admin, call_phone, work_hours, echo)
+
 @dp.message_handler(lambda m: m.text in MENU)
 async def drink_selected(message: types.Message, state: FSMContext):
     logger.info(f"🥤 {message.text} от {message.from_user.id}")
@@ -150,8 +146,7 @@ async def drink_selected(message: types.Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=get_info_keyboard())
         return
     
-    # ✅ АНТИСПАМ
-    if time.time() - last_orders[message.from_user.id] < 300:  # 5 мин
+    if time.time() - last_orders[message.from_user.id] < 300:
         await message.answer("⏳ Подождите 5 минут перед новым заказом", reply_markup=get_menu_keyboard())
         return
     
@@ -217,7 +212,6 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             'total': data['total']
         }
         
-        # ✅ АНТИСПАМ
         last_orders[message.from_user.id] = time.time()
         
         msk_time = get_moscow_time().strftime("%H:%M")
@@ -235,7 +229,6 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         await state.finish()
         return
     
-    # ✅ ОТМЕНА → правильная клавиатура
     await state.finish()
     await message.answer("🔙 В меню ☕", reply_markup=get_correct_keyboard())
 
@@ -291,40 +284,36 @@ async def echo(message: types.Message, state: FSMContext):
 
 # ========================================
 async def on_startup(dp):
-    """🚀 Старт с московским временем"""
     msk_time = get_moscow_time().strftime("%H:%M")
-    await bot.delete_webhook(drop_pending_updates=True)
-    await asyncio.sleep(1)
-    await bot.set_webhook(WEBHOOK_URL)
-    info = await bot.get_webhook_info()
-    logger.info(f"✅ WEBHOOK: {info.url}")
-    logger.info(f"🚀 v9.0 START LIVE — {CAFE_NAME} | MSK: {msk_time} | "
+    logger.info(f"🚀 v9.1 POLLING LIVE — {CAFE_NAME} | MSK: {msk_time} | "
                f"{'🟢 ОТКРЫТО' if is_cafe_open() else '🔴 ЗАКРЫТО'}")
-    logger.info("🏥 Healthcheck: CafeBotify v9.0 LIVE ✅")
+    logger.info("🏥 Healthcheck: CafeBotify v9.1 LIVE ✅")
     logger.info("💰 START 2990₽/мес Готов к продажам! 🚀")
 
 async def on_shutdown(dp):
-    await bot.delete_webhook()
     await dp.storage.close()
     logger.info("🛑 CafeBotify STOP")
 
 # ========================================
-if __name__ == '__main__':
-    logger.info(f"🎬 v9.0 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
-    
-    # ✅ RENDER HEALTHCHECK + aiogram webhook
-    async def healthcheck(request):
-        return web.Response(text="CafeBotify v9.0 START LIVE ✅", status=200)
-    
+async def healthcheck(request):
+    return web.Response(text="CafeBotify v9.1 LIVE ✅", status=200)
+
+def run_healthcheck():
     app = web.Application()
     app.router.add_get('/', healthcheck)
+    web.run_app(app, host='0.0.0.0', port=WEBAPP_PORT)
+
+if __name__ == '__main__':
+    logger.info(f"🎬 v9.1 START — {CAFE_NAME} | PORT: {WEBAPP_PORT}")
     
-    executor.start_webhook(
+    # ✅ Healthcheck в отдельном потоке
+    health_thread = threading.Thread(target=run_healthcheck, daemon=True)
+    health_thread.start()
+    
+    # ✅ Aiogram polling (работает 24/7 на Render Free)
+    executor.start_polling(
         dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-        skip_updates=True,
-        host='0.0.0.0',
-        port=WEBAPP_PORT,
+        skip_updates=True
     )
