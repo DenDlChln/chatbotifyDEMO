@@ -1,6 +1,7 @@
 # =========================
 # CafeBotify — START v1.0
 # Меню и часы работы из config.json (без Redis-меню)
+# Rate-limit: 1 минута, ставится только после подтверждённого заказа
 # =========================
 
 import os
@@ -8,6 +9,7 @@ import json
 import logging
 import asyncio
 import time
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, Tuple
 
@@ -33,14 +35,11 @@ logger = logging.getLogger(__name__)
 
 MSK_TZ = timezone(timedelta(hours=3))
 
+# NEW: rate limit (seconds)
+RATE_LIMIT_SECONDS = 60
+
 
 def _parse_work_hours(obj: Any) -> Optional[Tuple[int, int]]:
-    """
-    Accepts:
-      - work_hours: [start_hour, end_hour]
-      - work_start/work_end as ints
-    Returns (start, end) or None.
-    """
     try:
         if isinstance(obj, list) and len(obj) == 2:
             start = int(obj[0])
@@ -81,12 +80,10 @@ def load_config() -> Dict[str, Any]:
                 }
             )
 
-            # New формат: work_hours: [start, end]
             wh = _parse_work_hours(cafe.get("work_hours"))
             if wh:
                 default_config["work_start"], default_config["work_end"] = wh
             else:
-                # Backward compatibility: work_start/work_end
                 try:
                     ws = cafe.get("work_start", default_config["work_start"])
                     we = cafe.get("work_end", default_config["work_end"])
@@ -110,7 +107,6 @@ CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
 
-# ВАЖНО: часы теперь берём из config.json
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
 
@@ -136,7 +132,6 @@ def get_moscow_time() -> datetime:
 
 
 def is_cafe_open() -> bool:
-    # START v1.0: считаем работу в рамках одного дня (без ночных смен).
     return WORK_START <= get_moscow_time().hour < WORK_END
 
 
@@ -207,6 +202,10 @@ async def get_redis_client():
         raise
 
 
+def _rate_limit_key(user_id: int) -> str:
+    return f"rate_limit:{user_id}"
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -233,17 +232,7 @@ async def drink_selected(message: Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
 
-    try:
-        r_client = await get_redis_client()
-        last_order = await r_client.get(f"rate_limit:{user_id}")
-        if last_order and time.time() - float(last_order) < 300:
-            await message.answer("⏳ Подождите 5 минут перед новым заказом", reply_markup=create_menu_keyboard())
-            await r_client.aclose()
-            return
-        await r_client.setex(f"rate_limit:{user_id}", 300, time.time())
-        await r_client.aclose()
-    except Exception:
-        pass
+    # IMPORTANT: rate-limit больше НЕ ставим здесь (чтобы не блокировать отмену/возврат в меню)
 
     drink = message.text
     price = MENU[drink]
@@ -290,6 +279,25 @@ async def process_quantity(message: Message, state: FSMContext):
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
 async def process_confirmation(message: Message, state: FSMContext):
     if message.text == "Подтвердить":
+        # NEW: rate-limit проверяем и ставим ТОЛЬКО здесь (на подтверждённый заказ)
+        try:
+            r_client = await get_redis_client()
+            user_id = message.from_user.id
+            last_order = await r_client.get(_rate_limit_key(user_id))
+            if last_order and time.time() - float(last_order) < RATE_LIMIT_SECONDS:
+                await message.answer(
+                    f"⏳ Дай мне минутку: новый заказ можно оформить через {RATE_LIMIT_SECONDS} секунд после предыдущего.",
+                    reply_markup=create_menu_keyboard(),
+                )
+                await r_client.aclose()
+                return
+
+            # SETEX ставит значение и TTL в секундах [web:237]
+            await r_client.setex(_rate_limit_key(user_id), RATE_LIMIT_SECONDS, time.time())
+            await r_client.aclose()
+        except Exception:
+            pass
+
         data = await state.get_data()
         drink, quantity, total = data["drink"], data["quantity"], data["total"]
         order_id = f"order:{int(time.time())}:{message.from_user.id}"
@@ -412,6 +420,7 @@ async def on_startup(bot: Bot) -> None:
     logger.info("🚀 Запуск бота (START v1.0)...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
     logger.info(f"⏰ Часы работы: {WORK_START}:00–{WORK_END}:00 (МСК)")
+    logger.info(f"⏳ Rate-limit: {RATE_LIMIT_SECONDS} сек. (только после подтверждения)")
     logger.info(f"🔗 Webhook (target): {WEBHOOK_URL}")
 
     try:
