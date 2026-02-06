@@ -1,7 +1,8 @@
 # =========================
-# CafeBotify — START v1.0
-# Меню и часы работы из config.json (без Redis-меню)
+# CafeBotify — START v1.0 (DEMO)
+# Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
+# NEW: Админ может нажать "✉️ Ответить клиенту" и написать клиенту в личку
 # =========================
 
 import os
@@ -9,7 +10,6 @@ import json
 import logging
 import asyncio
 import time
-import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, Tuple
 
@@ -20,10 +20,16 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
-
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 
@@ -34,8 +40,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MSK_TZ = timezone(timedelta(hours=3))
-
-# NEW: rate limit (seconds)
 RATE_LIMIT_SECONDS = 60
 
 
@@ -93,7 +97,6 @@ def load_config() -> Dict[str, Any]:
                         default_config["work_end"] = we_i
                 except Exception:
                     pass
-
     except Exception:
         pass
 
@@ -125,6 +128,10 @@ router = Router()
 class OrderStates(StatesGroup):
     waiting_for_quantity = State()
     waiting_for_confirmation = State()
+
+
+class AdminReplyStates(StatesGroup):
+    waiting_for_reply_text = State()
 
 
 def get_moscow_time() -> datetime:
@@ -175,6 +182,23 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def create_admin_cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def create_admin_reply_inline_kb(user_id: int) -> InlineKeyboardMarkup:
+    # callback_data должно быть коротким
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✉️ Ответить клиенту", callback_data=f"reply:{user_id}")]
+        ]
+    )
+
+
 def get_closed_message() -> str:
     menu_text = " • ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
     return (
@@ -206,6 +230,9 @@ def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
 
 
+# -------------------------
+# Пользовательский флоу
+# -------------------------
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -231,8 +258,6 @@ async def drink_selected(message: Message, state: FSMContext):
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
-
-    # IMPORTANT: rate-limit больше НЕ ставим здесь (чтобы не блокировать отмену/возврат в меню)
 
     drink = message.text
     price = MENU[drink]
@@ -279,7 +304,7 @@ async def process_quantity(message: Message, state: FSMContext):
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
 async def process_confirmation(message: Message, state: FSMContext):
     if message.text == "Подтвердить":
-        # NEW: rate-limit проверяем и ставим ТОЛЬКО здесь (на подтверждённый заказ)
+        # Rate-limit проверяем и ставим только на подтверждённый заказ
         try:
             r_client = await get_redis_client()
             user_id = message.from_user.id
@@ -292,7 +317,6 @@ async def process_confirmation(message: Message, state: FSMContext):
                 await r_client.aclose()
                 return
 
-            # SETEX ставит значение и TTL в секундах [web:237]
             await r_client.setex(_rate_limit_key(user_id), RATE_LIMIT_SECONDS, time.time())
             await r_client.aclose()
         except Exception:
@@ -324,17 +348,24 @@ async def process_confirmation(message: Message, state: FSMContext):
             pass
 
         user_name = message.from_user.username or message.from_user.first_name or "Клиент"
+        user_id = message.from_user.id
+
         admin_message = (
             f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
             f"<b>{user_name}</b>\n"
-            f"<code>{message.from_user.id}</code>\n\n"
+            f"<code>{user_id}</code>\n\n"
             f"{drink}\n"
             f"{quantity} порций\n"
             f"<b>{total} ₽</b>\n\n"
             f"<code>{CAFE_PHONE}</code>"
         )
 
-        await message.bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
+        await message.bot.send_message(
+            ADMIN_ID,
+            admin_message,
+            disable_web_page_preview=True,
+            reply_markup=create_admin_reply_inline_kb(user_id),
+        )
 
         await message.answer(
             f"🎉 <b>Заказ #{order_num} принят!</b>\n\n"
@@ -416,8 +447,82 @@ async def stats_command(message: Message):
         await message.answer("❌ Ошибка статистики")
 
 
+# -------------------------
+# Админ: "Ответить клиенту"
+# -------------------------
+@router.callback_query(F.data.startswith("reply:"))
+async def admin_reply_button(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Недоступно", show_alert=True)
+        return
+
+    try:
+        target_user_id = int((cb.data or "").split("reply:", 1)[1])
+    except Exception:
+        await cb.answer("Ошибка кнопки", show_alert=True)
+        return
+
+    await state.set_state(AdminReplyStates.waiting_for_reply_text)
+    await state.update_data(reply_target_user_id=target_user_id)
+
+    await cb.answer("Ок")
+    await cb.message.answer(
+        f"✍️ Напиши сообщение клиенту:\n<code>{target_user_id}</code>\n\n"
+        f"Отправь текст одним сообщением.\n"
+        f"Чтобы отменить — нажми «❌ Отмена».",
+        reply_markup=create_admin_cancel_keyboard(),
+    )
+
+
+@router.message(StateFilter(AdminReplyStates.waiting_for_reply_text), F.text == "❌ Отмена")
+async def admin_reply_cancel(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await message.answer("Ок, отменил. Возвращаюсь в обычный режим.")
+
+
+@router.message(Command("cancel"))
+async def admin_cancel_command(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await message.answer("Ок, отменил.")
+
+
+@router.message(StateFilter(AdminReplyStates.waiting_for_reply_text))
+async def admin_send_reply(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    text = (message.text or "").strip()
+    if not text or text == "❌ Отмена":
+        return
+
+    data = await state.get_data()
+    target_user_id = data.get("reply_target_user_id")
+    if not target_user_id:
+        await state.clear()
+        await message.answer("Не вижу, кому отвечать. Нажми кнопку «Ответить» ещё раз.")
+        return
+
+    try:
+        await message.bot.send_message(
+            int(target_user_id),
+            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{text}",
+        )
+        await message.answer("✅ Отправлено клиенту.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить клиенту: {e}")
+
+    await state.clear()
+
+
+# -------------------------
+# Startup / Webhook
+# -------------------------
 async def on_startup(bot: Bot) -> None:
-    logger.info("🚀 Запуск бота (START v1.0)...")
+    logger.info("🚀 Запуск бота (START v1.0 DEMO)...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
     logger.info(f"⏰ Часы работы: {WORK_START}:00–{WORK_END}:00 (МСК)")
     logger.info(f"⏳ Rate-limit: {RATE_LIMIT_SECONDS} сек. (только после подтверждения)")
