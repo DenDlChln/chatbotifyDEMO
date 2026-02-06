@@ -1,10 +1,15 @@
+# =========================
+# CafeBotify — START v1.0
+# Меню и часы работы из config.json (без Redis-меню)
+# =========================
+
 import os
 import json
 import logging
 import asyncio
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
 import redis.asyncio as redis
 from aiohttp import web
@@ -27,8 +32,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MSK_TZ = timezone(timedelta(hours=3))
-WORK_START = 9
-WORK_END = 21
+
+
+def _parse_work_hours(obj: Any) -> Optional[Tuple[int, int]]:
+    """
+    Accepts:
+      - work_hours: [start_hour, end_hour]
+      - work_start/work_end as ints
+    Returns (start, end) or None.
+    """
+    try:
+        if isinstance(obj, list) and len(obj) == 2:
+            start = int(obj[0])
+            end = int(obj[1])
+            if 0 <= start <= 23 and 0 <= end <= 23 and start != end:
+                return start, end
+    except Exception:
+        return None
+    return None
 
 
 def load_config() -> Dict[str, Any]:
@@ -36,6 +57,8 @@ def load_config() -> Dict[str, Any]:
         "name": "Кофейня «Уют» ☕",
         "phone": "+7 989 273-67-56",
         "admin_chat_id": 1471275603,
+        "work_start": 9,
+        "work_end": 21,
         "menu": {
             "☕ Капучино": 250,
             "🥛 Латте": 270,
@@ -43,28 +66,53 @@ def load_config() -> Dict[str, Any]:
             "⚡ Эспрессо": 200,
         },
     }
+
     try:
         with open("config.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            config = data.get("cafe", {})
+            cafe = data.get("cafe", {})
+
             default_config.update(
                 {
-                    "name": config.get("name", default_config["name"]),
-                    "phone": config.get("phone", default_config["phone"]),
-                    "admin_chat_id": config.get("admin_chat_id", default_config["admin_chat_id"]),
-                    "menu": config.get("menu", default_config["menu"]),
+                    "name": cafe.get("name", default_config["name"]),
+                    "phone": cafe.get("phone", default_config["phone"]),
+                    "admin_chat_id": cafe.get("admin_chat_id", default_config["admin_chat_id"]),
+                    "menu": cafe.get("menu", default_config["menu"]),
                 }
             )
+
+            # New формат: work_hours: [start, end]
+            wh = _parse_work_hours(cafe.get("work_hours"))
+            if wh:
+                default_config["work_start"], default_config["work_end"] = wh
+            else:
+                # Backward compatibility: work_start/work_end
+                try:
+                    ws = cafe.get("work_start", default_config["work_start"])
+                    we = cafe.get("work_end", default_config["work_end"])
+                    ws_i, we_i = int(ws), int(we)
+                    if 0 <= ws_i <= 23 and 0 <= we_i <= 23 and ws_i != we_i:
+                        default_config["work_start"] = ws_i
+                        default_config["work_end"] = we_i
+                except Exception:
+                    pass
+
     except Exception:
         pass
+
     return default_config
 
 
 cafe_config = load_config()
+
 CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
 MENU = dict(cafe_config["menu"])
+
+# ВАЖНО: часы теперь берём из config.json
+WORK_START = int(cafe_config["work_start"])
+WORK_END = int(cafe_config["work_end"])
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
@@ -88,13 +136,15 @@ def get_moscow_time() -> datetime:
 
 
 def is_cafe_open() -> bool:
+    # START v1.0: считаем работу в рамках одного дня (без ночных смен).
     return WORK_START <= get_moscow_time().hour < WORK_END
 
 
 def get_work_status() -> str:
     msk_hour = get_moscow_time().hour
     if is_cafe_open():
-        return f"🟢 <b>Открыто</b> (ещё {WORK_END - msk_hour} ч.)"
+        remaining = max(0, WORK_END - msk_hour)
+        return f"🟢 <b>Открыто</b> (ещё {remaining} ч.)"
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 
@@ -296,8 +346,6 @@ async def process_confirmation(message: Message, state: FSMContext):
     await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
 
 
-# ====== ТЁПЛЫЕ СООБЩЕНИЯ (ИЗМЕНЕНО ТУТ) ======
-
 @router.message(F.text == "📞 Позвонить")
 async def call_phone(message: Message):
     name = get_user_name(message)
@@ -341,8 +389,6 @@ async def show_hours(message: Message):
         )
         await message.answer(text, reply_markup=create_info_keyboard())
 
-# ====== / ТЁПЛЫЕ СООБЩЕНИЯ ======
-
 
 @router.message(Command("stats"))
 async def stats_command(message: Message):
@@ -363,8 +409,9 @@ async def stats_command(message: Message):
 
 
 async def on_startup(bot: Bot) -> None:
-    logger.info("🚀 Запуск бота...")
+    logger.info("🚀 Запуск бота (START v1.0)...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
+    logger.info(f"⏰ Часы работы: {WORK_START}:00–{WORK_END}:00 (МСК)")
     logger.info(f"🔗 Webhook (target): {WEBHOOK_URL}")
 
     try:
