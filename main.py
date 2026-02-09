@@ -2,7 +2,8 @@
 # CafeBotify — START v1.0 (DEMO)
 # Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
-# NEW: В уведомлении админу есть ссылка, открывающая чат с клиентом
+# NEW: Админ отвечает клиенту командой: /reply привет, позволь уточнить…
+#      ID клиента подставляется автоматически (последний заказ)
 # =========================
 
 import os
@@ -206,6 +207,10 @@ def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
 
 
+def _last_reply_user_key(admin_id: int) -> str:
+    return f"last_reply_user:{admin_id}"
+
+
 # -------------------------
 # Пользовательский флоу
 # -------------------------
@@ -302,13 +307,17 @@ async def process_confirmation(message: Message, state: FSMContext):
         order_id = f"order:{int(time.time())}:{message.from_user.id}"
         order_num = order_id.split(":")[-1]
 
+        user_name = message.from_user.username or message.from_user.first_name or "Клиент"
+        user_id = message.from_user.id
+
+        # Сохраняем ID клиента для быстрого /reply от админа (TTL 30 минут)
         try:
             r_client = await get_redis_client()
             await r_client.hset(
                 order_id,
                 mapping={
-                    "user_id": message.from_user.id,
-                    "username": message.from_user.username or "N/A",
+                    "user_id": user_id,
+                    "username": user_name,
                     "drink": drink,
                     "quantity": quantity,
                     "total": total,
@@ -318,23 +327,22 @@ async def process_confirmation(message: Message, state: FSMContext):
             await r_client.expire(order_id, 86400)
             await r_client.incr("stats:total_orders")
             await r_client.incr(f"stats:drink:{drink}")
+            # ключ для быстрого ответа
+            await r_client.setex(_last_reply_user_key(ADMIN_ID), 1800, user_id)  # 30 мин
             await r_client.aclose()
         except Exception:
             pass
 
-        user_name = message.from_user.username or message.from_user.first_name or "Клиент"
-        user_id = message.from_user.id
-        user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
-
         admin_message = (
             f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {CAFE_NAME}\n\n"
-            f"{user_link}\n"
+            f"<b>{user_name}</b>\n"
             f"<code>{user_id}</code>\n\n"
             f"{drink}\n"
             f"{quantity} порций\n"
             f"<b>{total} ₽</b>\n\n"
             f"<code>{CAFE_PHONE}</code>\n\n"
-            f"Нажми на имя, чтобы открыть чат и ответить клиенту."
+            f"Чтобы ответить клиенту, просто напиши:\n"
+            f"<code>/reply привет, позволь уточнить…</code>"
         )
 
         await message.bot.send_message(
@@ -397,7 +405,7 @@ async def show_hours(message: Message):
     else:
         text = (
             f"{name}, спасибо что заглянул!\n\n"
-            f"🕐 <b>Сейчас:</b> {msк_time} (МСК)\n"
+            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
             f"🏪 {get_work_status()}\n\n"
             f"📞 Телефон: <code>{CAFE_PHONE}</code>\n"
             f"Пока можем показать меню — напиши /start."
@@ -421,6 +429,56 @@ async def stats_command(message: Message):
         await message.answer(stats_text)
     except Exception:
         await message.answer("❌ Ошибка статистики")
+
+
+# -------------------------
+# Админ: /reply <текст> (ID клиента берём из Redis)
+# -------------------------
+@router.message(Command("reply"))
+async def admin_reply_command(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # /reply <text...>
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(
+            "Напиши так:\n"
+            "<code>/reply привет, позволь уточнить…</code>\n\n"
+            "ID клиента подставлю автоматически — по последнему заказу."
+        )
+        return
+
+    reply_text = parts[1].strip()
+
+    try:
+        r_client = await get_redis_client()
+        target_user_raw = await r_client.get(_last_reply_user_key(ADMIN_ID))
+        await r_client.aclose()
+    except Exception:
+        target_user_raw = None
+
+    if not target_user_raw:
+        await message.answer(
+            "Не вижу активного клиента для ответа.\n"
+            "Сначала дождись нового заказа, потом жми /reply."
+        )
+        return
+
+    try:
+        target_user_id = int(target_user_raw)
+    except ValueError:
+        await message.answer("Сохранённый ID клиента повреждён. Жди нового заказа и попробуй снова.")
+        return
+
+    try:
+        await message.bot.send_message(
+            target_user_id,
+            f"💬 Сообщение от <b>{CAFE_NAME}</b>:\n\n{reply_text}",
+        )
+        await message.answer("✅ Отправлено клиенту.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить клиенту: {e}")
 
 
 # -------------------------
