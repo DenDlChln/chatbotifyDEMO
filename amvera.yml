@@ -1,13 +1,14 @@
+version: null
 meta:
   environment: python
-  toolchain: pip
-  version: "3.11"
-
+  toolchain:
+    name: pip
+    version: "3.11"
 build:
   requirementsPath: requirements.txt
   useCache: true
-
 run:
-  scriptName: main.py
   persistenceMount: /data
+  scriptName: main.py
   containerPort: 10000
+serviceType: compute
