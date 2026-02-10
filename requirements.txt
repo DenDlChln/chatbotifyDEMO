@@ -1,3 +1,9 @@
+<<<<<<< HEAD
 aiogram>=3.4,<4.0
 aiohttp>=3.9,<4.0
 redis>=5.0,<6.0
+=======
+aiogram==3.13.1
+redis==5.2.0
+aiohttp==3.9.5
+>>>>>>> 6a5d87f32643b0642d29376cb373f25ab5ae8851

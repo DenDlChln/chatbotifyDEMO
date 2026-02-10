@@ -1,0 +1,20 @@
+https://github.com/DenDlChln/chatbotify/blob/main/backup.txt → Edit → ВЫДЛИ ВСЁ → ВСТАВЬ:
+
+# 🚀 CafeBotify — РАБОЧИЕ ВЕРСИИ BACKUP
+# Дата: 02.02.2026 22:39 MSK | День 4 COMPLETE
+# LIVE: https://chatbotify-2tjd.onrender.com/
+# Демо: @CafeBotifyBot
+
+═══════════════════════════════════════════════════════════════
+
+## ✅ ДЕНЬ 4: main.py (ТЕКУЩАЯ РАБОЧАЯ ВЕРСИЯ)
+# Универсальный CafeBotify + "Заявка на бронь принята!"
+
+CAFE = {
+    "name": "CafeBotify Demo ☕",
+    "phone": "8 (861) 123-45-67",
+    "admin_chat_id": 861234567,  # ЗАМЕНИ НА СВОЙ!
+    "work_hours": [18, 22],
+    "menu": {
+        "☕ Кофе": 200,
+        "
