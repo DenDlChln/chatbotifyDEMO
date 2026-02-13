@@ -9,8 +9,8 @@
 # - Кнопка 📊 Статистика видна всем (не-админу показываем демо-отчёт)
 # - 🛠 Меню: админ может добавлять/править/удалять позиции (хранение в Redis)
 #
-# NEW:
-# - Время готовности: после "Подтвердить" пользователь выбирает "сейчас/10/20/30/другое"
+# READY TIME:
+# - После "Подтвердить" -> выбор: "Сейчас" или "Через 20 мин" или "Отмена"
 # =========================
 
 import os
@@ -34,6 +34,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,7 +142,6 @@ class OrderStates(StatesGroup):
     waiting_for_quantity = State()
     waiting_for_confirmation = State()
     waiting_for_ready_time = State()
-    waiting_for_ready_custom = State()
 
 
 class BookingStates(StatesGroup):
@@ -295,12 +295,9 @@ BTN_BACK = "⬅️ Назад"
 BTN_CONFIRM = "Подтвердить"
 BTN_MENU = "Меню"
 
-# Время готовности
+# Время готовности (упрощено)
 BTN_READY_NOW = "🚶 Сейчас"
-BTN_READY_10 = "⏱ 10 мин"
-BTN_READY_20 = "⏱ 20 мин"
-BTN_READY_30 = "⏱ 30 мин"
-BTN_READY_CUSTOM = "⌨️ Другое"
+BTN_READY_20 = "⏱ Через 20 мин"
 
 MENU_EDIT_ADD = "➕ Добавить позицию"
 MENU_EDIT_EDIT = "✏️ Изменить цену"
@@ -346,8 +343,8 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
 def create_ready_time_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_READY_NOW), KeyboardButton(text=BTN_READY_10), KeyboardButton(text=BTN_READY_20)],
-            [KeyboardButton(text=BTN_READY_30), KeyboardButton(text=BTN_READY_CUSTOM), KeyboardButton(text=BTN_CANCEL)],
+            [KeyboardButton(text=BTN_READY_NOW), KeyboardButton(text=BTN_READY_20)],
+            [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -444,7 +441,7 @@ def _is_reserved_button(text: str) -> bool:
     reserved = {
         BTN_CALL, BTN_HOURS, BTN_STATS, BTN_BOOKING, BTN_MENU_EDIT,
         BTN_CANCEL, BTN_BACK, BTN_CONFIRM, BTN_MENU,
-        BTN_READY_NOW, BTN_READY_10, BTN_READY_20, BTN_READY_30, BTN_READY_CUSTOM,
+        BTN_READY_NOW, BTN_READY_20,
         MENU_EDIT_ADD, MENU_EDIT_EDIT, MENU_EDIT_DEL,
     }
     return text in reserved
@@ -603,7 +600,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Общие кнопки (важно: выше, чем общий текстовый хендлер)
+# Общие кнопки (обработчики должны быть выше общего F.text)
 # -------------------------
 
 @router.message(F.text == BTN_STATS)
@@ -829,57 +826,15 @@ async def process_ready_time(message: Message, state: FSMContext):
         await message.answer("Ок, заказ отменён.", reply_markup=create_menu_keyboard())
         return
 
-    mapping = {
-        BTN_READY_NOW: 0,
-        BTN_READY_10: 10,
-        BTN_READY_20: 20,
-        BTN_READY_30: 30,
-    }
-
-    if message.text in mapping:
-        await _finalize_order(message, state, mapping[message.text])
+    if message.text == BTN_READY_NOW:
+        await _finalize_order(message, state, 0)
         return
 
-    if message.text == BTN_READY_CUSTOM:
-        await state.set_state(OrderStates.waiting_for_ready_custom)
-        await message.answer(
-            "Введите число минут (например: <code>15</code>).\nМожно от 5 до 120.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-            ),
-        )
+    if message.text == BTN_READY_20:
+        await _finalize_order(message, state, 20)
         return
 
     await message.answer("Выберите вариант кнопкой.", reply_markup=create_ready_time_keyboard())
-
-
-@router.message(StateFilter(OrderStates.waiting_for_ready_custom))
-async def process_ready_custom_minutes(message: Message, state: FSMContext):
-    await register_demo_subscriber(message.from_user.id)
-
-    if message.text == BTN_CANCEL:
-        await state.clear()
-        await message.answer("Ок, заказ отменён.", reply_markup=create_menu_keyboard())
-        return
-
-    try:
-        mins = int((message.text or "").strip())
-        if not (5 <= mins <= 120):
-            raise ValueError
-    except Exception:
-        await message.answer(
-            "Нужно число от 5 до 120.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text=BTN_CANCEL)]],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-            ),
-        )
-        return
-
-    await _finalize_order(message, state, mins)
 
 
 # -------------------------
@@ -1228,7 +1183,7 @@ async def menu_edit_remove(message: Message, state: FSMContext):
 
 
 # -------------------------
-# ВАЖНО: общий обработчик текста (для выбора напитка)
+# Общий обработчик текста (выбор напитка)
 # -------------------------
 
 @router.message(StateFilter(None), F.text)
@@ -1236,17 +1191,33 @@ async def any_text_outside_states(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
     text = (message.text or "").strip()
 
-    # Если это напиток — стартуем заказ
     if text in MENU:
         await _start_order(message, state, text)
         return
 
-    # Игнорируем системные кнопки (их обработчики уже выше)
     if _is_reserved_button(text):
         return
 
-    # Лёгкая подсказка
     await message.answer("Выбери напиток кнопкой в меню или нажми «Бронирование».", reply_markup=create_menu_keyboard())
+
+
+# -------------------------
+# Help
+# -------------------------
+
+@router.message(Command("help"))
+async def help_command(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    text = (
+        "Этот бот — демо-ассистент для кофейни.\n\n"
+        "Что он умеет:\n"
+        "• Меню и быстрые заказы\n"
+        "• Время готовности (сейчас / через 20 минут)\n"
+        "• Заявки на бронирование\n"
+        "• Статистика (в демо — пример)\n\n"
+        "Связаться: @denvyd"
+    )
+    await message.answer(text, reply_markup=create_menu_keyboard())
 
 
 # -------------------------
