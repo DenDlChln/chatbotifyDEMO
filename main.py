@@ -2,10 +2,12 @@
 # CafeBotify — START v1.0 (DEMO)
 # Меню и часы работы из config.json
 # Rate-limit: 1 минута, ставится только после подтверждённого заказа
-# NEW/DEMO:
-# - Кнопка 📊 Статистика видна всем в DEMO
-# - После подтверждения заказа пользователь видит "как видит админ" (2 сообщения, как на скрине)
-# - Админу также приходит реальное уведомление + пояснение
+#
+# DEMO:
+# - После подтверждения заказа: всем тестерам (кто нажал /start) приходит "как видит админ" (2 сообщения)
+# - После заявки на бронь: клиент получает "админ свяжется", затем всем тестерам приходит "как видит админ" (2 сообщения)
+# - Кнопка 📊 Статистика видна всем (не-админу показываем демо-отчёт)
+# - Добавлено 🛠 Меню: админ может менять меню (хранение в Redis, чтобы переживало рестарты)
 # =========================
 
 import os
@@ -14,13 +16,14 @@ import logging
 import asyncio
 import time
 import random
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, Tuple
 
 import redis.asyncio as redis
 from aiohttp import web
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router, html
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -28,9 +31,6 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-
-# Для безопасной HTML-разметки
-from aiogram import html
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,8 +41,10 @@ logger = logging.getLogger(__name__)
 MSK_TZ = timezone(timedelta(hours=3))
 RATE_LIMIT_SECONDS = 60
 
-# В DEMO пользователь после заказа видит "админский" формат у себя в чате
 DEMO_MODE = True
+
+DEMO_SUBSCRIBERS_KEY = "demo:subscribers"
+MENU_REDIS_KEY = "menu:items"  # hash: {drink: price}
 
 
 def get_moscow_time() -> datetime:
@@ -114,7 +116,9 @@ cafe_config = load_config()
 CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
-MENU = dict(cafe_config["menu"])
+
+# ВАЖНО: MENU будет синхронизироваться с Redis на старте и при изменениях
+MENU: Dict[str, int] = dict(cafe_config["menu"])
 
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
@@ -134,6 +138,21 @@ router = Router()
 class OrderStates(StatesGroup):
     waiting_for_quantity = State()
     waiting_for_confirmation = State()
+
+
+class BookingStates(StatesGroup):
+    waiting_for_datetime = State()
+    waiting_for_people = State()
+    waiting_for_comment = State()
+
+
+class MenuEditStates(StatesGroup):
+    waiting_for_action = State()
+    waiting_for_add_name = State()
+    waiting_for_add_price = State()
+    waiting_for_edit_name = State()
+    waiting_for_edit_price = State()
+    waiting_for_remove_name = State()
 
 
 async def get_redis_client():
@@ -162,27 +181,139 @@ def get_work_status() -> str:
     return f"🔴 <b>Закрыто</b>\n🕐 Открываемся: {WORK_START}:00 (МСК)"
 
 
+# ---------- DEMO аудитория (все, кто нажал /start) ----------
+
+async def register_demo_subscriber(user_id: int):
+    if not DEMO_MODE:
+        return
+    try:
+        r = await get_redis_client()
+        await r.sadd(DEMO_SUBSCRIBERS_KEY, user_id)
+        await r.expire(DEMO_SUBSCRIBERS_KEY, 60 * 60 * 24 * 30)  # 30 дней
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def get_demo_recipients(include_admin: bool = True) -> set[int]:
+    recipients: set[int] = set()
+    try:
+        r = await get_redis_client()
+        raw = await r.smembers(DEMO_SUBSCRIBERS_KEY)
+        await r.aclose()
+        for x in raw:
+            try:
+                recipients.add(int(x))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if include_admin:
+        recipients.add(ADMIN_ID)
+    return recipients
+
+
+async def send_to_demo_audience(bot: Bot, text: str, include_admin: bool = True):
+    recipients = await get_demo_recipients(include_admin=include_admin)
+    for chat_id in recipients:
+        try:
+            await bot.send_message(chat_id, text, disable_web_page_preview=True)
+        except Exception:
+            # если пользователь отвалился/заблокировал — убираем из подписчиков
+            try:
+                r = await get_redis_client()
+                await r.srem(DEMO_SUBSCRIBERS_KEY, chat_id)
+                await r.aclose()
+            except Exception:
+                pass
+
+
+# ---------- меню: синхронизация с Redis ----------
+
+async def sync_menu_from_redis():
+    """
+    Если в Redis есть menu:items — берём его как источник правды.
+    Если нет — заливаем текущий MENU (из config.json) в Redis.
+    """
+    global MENU
+    try:
+        r = await get_redis_client()
+        data = await r.hgetall(MENU_REDIS_KEY)
+        if data:
+            new_menu: Dict[str, int] = {}
+            for k, v in data.items():
+                try:
+                    drink = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                    price_str = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                    new_menu[drink] = int(price_str)
+                except Exception:
+                    continue
+            if new_menu:
+                MENU = dict(new_menu)
+        else:
+            if MENU:
+                mapping = {k: str(v) for k, v in MENU.items()}
+                await r.hset(MENU_REDIS_KEY, mapping=mapping)
+        await r.aclose()
+    except Exception as e:
+        logger.error(f"❌ sync_menu_from_redis error: {e}")
+
+
+async def menu_set_item(drink: str, price: int):
+    global MENU
+    MENU[drink] = price
+    try:
+        r = await get_redis_client()
+        await r.hset(MENU_REDIS_KEY, drink, str(price))
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def menu_delete_item(drink: str):
+    global MENU
+    if drink in MENU:
+        MENU.pop(drink, None)
+    try:
+        r = await get_redis_client()
+        await r.hdel(MENU_REDIS_KEY, drink)
+        await r.aclose()
+    except Exception:
+        pass
+
+
 # ---------- клавиатуры ----------
+
+BTN_CALL = "📞 Позвонить"
+BTN_HOURS = "⏰ Часы работы"
+BTN_STATS = "📊 Статистика"
+BTN_BOOKING = "📅 Бронирование"
+BTN_MENU_EDIT = "🛠 Меню"
+BTN_CANCEL = "🔙 Отмена"
+BTN_BACK = "⬅️ Назад"
+
+BTN_CONFIRM = "Подтвердить"
+BTN_MENU = "Меню"
+
+MENU_EDIT_ADD = "➕ Добавить позицию"
+MENU_EDIT_EDIT = "✏️ Изменить цену"
+MENU_EDIT_DEL = "🗑 Удалить позицию"
+
 
 def create_menu_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text=drink)] for drink in MENU.keys()]
-    keyboard.append(
-        [
-            KeyboardButton(text="📞 Позвонить"),
-            KeyboardButton(text="⏰ Часы работы"),
-            KeyboardButton(text="📊 Статистика"),  # DEMO: видна всем
-        ]
-    )
+    keyboard.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
+    keyboard.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 def create_info_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton(text="📞 Позвонить"),
-            KeyboardButton(text="⏰ Часы работы"),
-            KeyboardButton(text="📊 Статистика"),  # DEMO: видна всем
-        ]],
+        keyboard=[
+            [KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)],
+        ],
         resize_keyboard=True,
     )
 
@@ -191,7 +322,7 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="1️⃣"), KeyboardButton(text="2️⃣"), KeyboardButton(text="3️⃣")],
-            [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text="🔙 Отмена")],
+            [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
@@ -200,7 +331,46 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
 
 def create_confirm_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Подтвердить"), KeyboardButton(text="Меню")]],
+        keyboard=[[KeyboardButton(text=BTN_CONFIRM), KeyboardButton(text=BTN_MENU)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def create_booking_cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_MENU)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def create_booking_people_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3"), KeyboardButton(text="4")],
+            [KeyboardButton(text="5"), KeyboardButton(text="6"), KeyboardButton(text="7"), KeyboardButton(text="8")],
+            [KeyboardButton(text="9"), KeyboardButton(text="10"), KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def create_menu_edit_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_EDIT_ADD), KeyboardButton(text=MENU_EDIT_EDIT)],
+            [KeyboardButton(text=MENU_EDIT_DEL), KeyboardButton(text=BTN_BACK)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_BACK)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
@@ -237,12 +407,12 @@ FINISH_VARIANTS = [
 
 
 def get_closed_message() -> str:
-    menu_text = " • ".join([f"<b>{drink}</b> {price}₽" for drink, price in MENU.items()])
+    menu_text = " • ".join([f"<b>{html.quote(drink)}</b> {price}₽" for drink, price in MENU.items()])
     return (
-        f"🔒 <b>{CAFE_NAME} сейчас закрыто!</b>\n\n"
+        f"🔒 <b>{html.quote(CAFE_NAME)} сейчас закрыто!</b>\n\n"
         f"⏰ {get_work_status()}\n\n"
         f"☕ <b>Наше меню:</b>\n{menu_text}\n\n"
-        f"📞 <b>Связаться:</b>\n<code>{CAFE_PHONE}</code>\n\n"
+        f"📞 <b>Связаться:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
         f"✨ <i>До скорой встречи!</i>"
     )
 
@@ -251,6 +421,15 @@ def get_user_name(message: Message) -> str:
     if message.from_user is None:
         return "друг"
     return message.from_user.first_name or "друг"
+
+
+def _is_reserved_button(text: str) -> bool:
+    reserved = {
+        BTN_CALL, BTN_HOURS, BTN_STATS, BTN_BOOKING, BTN_MENU_EDIT,
+        BTN_CANCEL, BTN_BACK, BTN_CONFIRM, BTN_MENU,
+        MENU_EDIT_ADD, MENU_EDIT_EDIT, MENU_EDIT_DEL,
+    }
+    return text in reserved
 
 
 # -------------------------
@@ -268,6 +447,8 @@ def _build_demo_stats() -> tuple[int, Dict[str, int]]:
 
 
 async def _send_real_stats(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
         r_client = await get_redis_client()
         total_orders = int(await r_client.get("stats:total_orders") or 0)
@@ -288,7 +469,6 @@ async def _send_real_stats(message: Message):
 
 async def _send_demo_stats(message: Message):
     total, by_drink = _build_demo_stats()
-
     stats_text = (
         "📊 <b>Статистика заказов (DEMO)</b>\n\n"
         "Пример того, как будет выглядеть отчёт для владельца/администратора.\n\n"
@@ -296,18 +476,89 @@ async def _send_demo_stats(message: Message):
     )
     for drink in MENU.keys():
         stats_text += f"{html.quote(drink)}: {by_drink.get(drink, 0)}\n"
-
     await message.answer(stats_text, reply_markup=create_menu_keyboard())
 
 
 # -------------------------
-# Пользовательский флоу
+# Админ-формы сообщений
+# -------------------------
+
+def build_admin_order_messages(
+    *,
+    order_num: str,
+    user_id: int,
+    user_name: str,
+    drink: str,
+    quantity: int,
+    total: int,
+) -> tuple[str, str]:
+    safe_user_name = html.quote(user_name)
+    safe_drink = html.quote(drink)
+    user_link = f'<a href="tg://user?id={user_id}">{safe_user_name}</a>'
+
+    msg1 = (
+        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
+        f"{user_link}\n"
+        f"<code>{user_id}</code>\n\n"
+        f"{safe_drink}\n"
+        f"{quantity} порций\n"
+        f"<b>{total} ₽</b>\n\n"
+        f"Нажми на имя, чтобы открыть чат и ответить клиенту."
+    )
+
+    msg2 = (
+        "ℹ️ <b>ПРИМЕР ПОДТВЕРЖДЁННОГО ЗАКАЗА (КАК ВИДИТ АДМИН)</b>\n\n"
+        "В рабочем режиме бот будет присылать вам каждое подтверждение заказа в таком виде.\n"
+        f"Выше — только что оформленный заказ гостя #{order_num}.\n\n"
+        "Нажмите на имя клиента, чтобы открыть чат и уточнить детали."
+    )
+    return msg1, msg2
+
+
+def build_admin_booking_messages(
+    *,
+    booking_id: str,
+    user_id: int,
+    user_name: str,
+    dt_str: str,
+    people: int,
+    comment: str,
+) -> tuple[str, str]:
+    safe_user_name = html.quote(user_name)
+    safe_dt = html.quote(dt_str)
+    safe_comment = html.quote(comment)
+    user_link = f'<a href="tg://user?id={user_id}">{safe_user_name}</a>'
+
+    msg1 = (
+        f"📋 <b>НОВАЯ ЗАЯВКА НА БРОНЬ #{booking_id}</b> | {html.quote(CAFE_NAME)}\n\n"
+        f"{user_link}\n"
+        f"<code>{user_id}</code>\n\n"
+        f"🗓 {safe_dt}\n"
+        f"👥 {people} чел.\n"
+        f"💬 {safe_comment}\n\n"
+        f"Нажми на имя, чтобы открыть чат и ответить клиенту."
+    )
+
+    msg2 = (
+        "ℹ️ <b>ПРИМЕР ЗАЯВКИ НА БРОНЬ (КАК ВИДИТ АДМИН)</b>\n\n"
+        "Так бот будет присылать владельцу/администратору заявки на бронирование.\n"
+        "Админ подтверждает/уточняет бронь уже напрямую в Telegram.\n\n"
+        "Нажмите на имя клиента, чтобы открыть чат и уточнить детали."
+    )
+    return msg1, msg2
+
+
+# -------------------------
+# START / HELP
 # -------------------------
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+
     user_id = message.from_user.id
+    await register_demo_subscriber(user_id)
+
     name = get_user_name(message)
     msk_time = get_moscow_time().strftime("%H:%M")
     logger.info(f"👤 /start от {user_id} | MSK: {msk_time}")
@@ -326,34 +577,502 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
 
 
-@router.message(F.text.in_(set(MENU.keys())))
-async def drink_selected(message: Message, state: FSMContext):
-    user_id = message.from_user.id
+@router.message(Command("help"))
+async def help_command(message: Message):
+    text = (
+        "Этот бот — демо-ассистент для кофейни.\n\n"
+        "Что он умеет:\n"
+        "• Показывать меню и часы работы\n"
+        "• Принимать быстрые заказы прямо в чате\n"
+        "• Принимать заявки на бронирование (админ подтверждает вручную)\n"
+        "• Показывать пример того, как админ видит заказ/бронь (DEMO)\n"
+        "• Показывать статистику (в демо — пример)\n\n"
+        "Хотите такой бот для своей кофейни?\n"
+        "Связаться в Telegram: @denvyd"
+    )
+    await message.answer(text, reply_markup=create_menu_keyboard())
+
+
+# -------------------------
+# Кнопки общего меню
+# -------------------------
+
+@router.message(F.text == BTN_STATS)
+async def stats_button(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    if message.from_user.id == ADMIN_ID:
+        await _send_real_stats(message)
+    else:
+        await _send_demo_stats(message)
+
+
+@router.message(Command("stats"))
+async def stats_command(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    if message.from_user.id == ADMIN_ID:
+        await _send_real_stats(message)
+    else:
+        await _send_demo_stats(message)
+
+
+@router.message(F.text == BTN_CALL)
+async def call_phone(message: Message):
+    await register_demo_subscriber(message.from_user.id)
     name = get_user_name(message)
-    logger.info(f"🥤 {message.text} от {user_id}")
+    if is_cafe_open():
+        text = (
+            f"{name}, буду рад помочь!\n\n"
+            f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
+            "Если удобнее — можешь просто выбрать напиток в меню, я всё оформлю здесь."
+        )
+        await message.answer(text, reply_markup=create_menu_keyboard())
+    else:
+        text = (
+            f"{name}, сейчас мы закрыты, но я всё равно подскажу.\n\n"
+            f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
+            f"⏰ {get_work_status()}\n\n"
+            "Хочешь — посмотри меню, а заказ оформим, как только откроемся."
+        )
+        await message.answer(text, reply_markup=create_info_keyboard())
+
+
+@router.message(F.text == BTN_HOURS)
+async def show_hours(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    name = get_user_name(message)
+    msk_time = get_moscow_time().strftime("%H:%M")
+    if is_cafe_open():
+        text = (
+            f"{name}, мы сейчас на месте и готовим вкусное.\n\n"
+            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
+            f"🏪 {get_work_status()}\n\n"
+            f"📞 Если нужно уточнить детали: <code>{html.quote(CAFE_PHONE)}</code>\n"
+            "Выбирай напиток в меню — оформлю заказ за минуту."
+        )
+        await message.answer(text, reply_markup=create_menu_keyboard())
+    else:
+        text = (
+            f"{name}, спасибо что заглянул!\n\n"
+            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
+            f"🏪 {get_work_status()}\n\n"
+            f"📞 Телефон: <code>{html.quote(CAFE_PHONE)}</code>\n"
+            "Пока можем показать меню — напиши /start."
+        )
+        await message.answer(text, reply_markup=create_info_keyboard())
+
+
+# -------------------------
+# Бронирование
+# -------------------------
+
+@router.message(F.text == BTN_BOOKING)
+async def booking_start(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+    await state.clear()
 
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
         return
 
-    drink = message.text
-    price = MENU[drink]
+    await state.set_state(BookingStates.waiting_for_datetime)
+    await message.answer(
+        "📅 <b>Бронирование столика</b>\n\n"
+        "Напишите дату и время в формате:\n"
+        "<code>15.02 19:00</code>\n\n"
+        "Или нажмите «Отмена».",
+        reply_markup=create_booking_cancel_keyboard(),
+    )
 
-    await state.set_state(OrderStates.waiting_for_quantity)
-    await state.set_data({"drink": drink, "price": price})
 
-    choice_text = random.choice(CHOICE_VARIANTS).format(name=name)
+@router.message(StateFilter(BookingStates.waiting_for_datetime))
+async def booking_datetime(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text in {BTN_CANCEL, BTN_MENU}:
+        await state.clear()
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_menu_keyboard())
+        return
+
+    if _is_reserved_button(message.text) or message.text in MENU.keys():
+        await message.answer(
+            "Для бронирования напишите дату и время как в примере:\n<code>15.02 19:00</code>",
+            reply_markup=create_booking_cancel_keyboard(),
+        )
+        return
+
+    m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})\s*$", message.text or "")
+    if not m:
+        await message.answer(
+            "Не понял формат.\nНапишите так: <code>15.02 19:00</code>",
+            reply_markup=create_booking_cancel_keyboard(),
+        )
+        return
+
+    day, month, hour, minute = map(int, m.groups())
+    year = get_moscow_time().year
+    try:
+        dt = datetime(year, month, day, hour, minute, tzinfo=MSK_TZ)
+    except Exception:
+        await message.answer("Похоже, дата/время некорректны. Попробуйте ещё раз.", reply_markup=create_booking_cancel_keyboard())
+        return
+
+    dt_str = dt.strftime("%d.%m %H:%M")
+    await state.update_data(booking_dt=dt_str)
+    await state.set_state(BookingStates.waiting_for_people)
 
     await message.answer(
-        f"{choice_text}\n\n"
-        f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
-        reply_markup=create_quantity_keyboard(),
+        f"Отлично! 🗓 <b>{dt_str}</b>\n\n"
+        "Сколько гостей будет?",
+        reply_markup=create_booking_people_keyboard(),
     )
+
+
+@router.message(StateFilter(BookingStates.waiting_for_people))
+async def booking_people(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text in {BTN_CANCEL, BTN_MENU}:
+        await state.clear()
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_menu_keyboard())
+        return
+
+    if _is_reserved_button(message.text) or message.text in MENU.keys():
+        await message.answer("Введите число гостей (1–10) или нажмите «Отмена».", reply_markup=create_booking_people_keyboard())
+        return
+
+    try:
+        people = int((message.text or "").strip())
+        if not (1 <= people <= 10):
+            raise ValueError
+    except Exception:
+        await message.answer("Нужно число от 1 до 10.", reply_markup=create_booking_people_keyboard())
+        return
+
+    await state.update_data(booking_people=people)
+    await state.set_state(BookingStates.waiting_for_comment)
+
+    await message.answer(
+        "Короткий комментарий (имя/пожелания/контакт) — или отправьте <code>-</code>, если без комментария.",
+        reply_markup=create_booking_cancel_keyboard(),
+    )
+
+
+@router.message(StateFilter(BookingStates.waiting_for_comment))
+async def booking_finish(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text in {BTN_CANCEL, BTN_MENU}:
+        await state.clear()
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_menu_keyboard())
+        return
+
+    if _is_reserved_button(message.text) or message.text in MENU.keys():
+        await message.answer(
+            "Пожалуйста, напишите комментарий (или <code>-</code>), либо нажмите «Отмена».",
+            reply_markup=create_booking_cancel_keyboard(),
+        )
+        return
+
+    data = await state.get_data()
+    dt_str = data.get("booking_dt", "—")
+    people = int(data.get("booking_people", 0) or 0)
+
+    comment = (message.text or "").strip()
+    if comment == "":
+        comment = "-"
+    if comment == "-":
+        comment_out = "—"
+    else:
+        comment_out = comment
+
+    booking_id = f"{int(time.time())}{message.from_user.id}"
+
+    # 1) Ответ пользователю: "админ свяжется" (без обещаний)
+    await message.answer(
+        "✅ <b>Заявка на бронь принята!</b>\n\n"
+        "Мы свяжемся с Вами для подтверждения в течение 15 минут.\n\n"
+        "Если планы изменились — просто напишите сюда.",
+        reply_markup=create_menu_keyboard(),
+    )
+
+    # 2) Сообщения "как видит админ" — всем тестерам (и админу)
+    user_name = message.from_user.username or message.from_user.first_name or "Клиент"
+    user_id = message.from_user.id
+
+    msg1, msg2 = build_admin_booking_messages(
+        booking_id=str(booking_id),
+        user_id=user_id,
+        user_name=user_name,
+        dt_str=dt_str,
+        people=people,
+        comment=comment_out,
+    )
+
+    await send_to_demo_audience(message.bot, msg1, include_admin=True)
+    await send_to_demo_audience(message.bot, msg2, include_admin=True)
+
+    await state.clear()
+
+
+# -------------------------
+# Редактирование меню (админ)
+# -------------------------
+
+def _menu_as_text() -> str:
+    if not MENU:
+        return "Меню пока пустое."
+    lines = []
+    for k, v in MENU.items():
+        lines.append(f"• <b>{html.quote(k)}</b> — {v}₽")
+    return "\n".join(lines)
+
+
+@router.message(F.text == BTN_MENU_EDIT)
+async def menu_edit_entry(message: Message, state: FSMContext):
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.from_user.id != ADMIN_ID:
+        await message.answer(
+            "🛠 <b>Управление меню</b>\n\n"
+            "В клиентской версии эта функция доступна владельцу/администратору.\n"
+            "В демо ниже — пример того, как выглядит меню:\n\n"
+            f"{_menu_as_text()}",
+            reply_markup=create_menu_keyboard(),
+        )
+        return
+
+    await state.clear()
+    await state.set_state(MenuEditStates.waiting_for_action)
+    await message.answer(
+        "🛠 <b>Управление меню</b>\n\n"
+        f"{_menu_as_text()}\n\n"
+        "Выберите действие:",
+        reply_markup=create_menu_edit_keyboard(),
+    )
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_action))
+async def menu_edit_choose_action(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.clear()
+        await message.answer("Ок.", reply_markup=create_menu_keyboard())
+        return
+
+    if message.text == MENU_EDIT_ADD:
+        await state.set_state(MenuEditStates.waiting_for_add_name)
+        await message.answer(
+            "Введите название новой позиции (например: <code>🥐 Круассан</code>)",
+            reply_markup=create_menu_edit_cancel_keyboard(),
+        )
+        return
+
+    if message.text == MENU_EDIT_EDIT:
+        await state.set_state(MenuEditStates.waiting_for_edit_name)
+        await message.answer(
+            "Введите точное название позиции, цену которой нужно изменить.\n\n"
+            f"{_menu_as_text()}",
+            reply_markup=create_menu_edit_cancel_keyboard(),
+        )
+        return
+
+    if message.text == MENU_EDIT_DEL:
+        await state.set_state(MenuEditStates.waiting_for_remove_name)
+        await message.answer(
+            "Введите точное название позиции, которую нужно удалить.\n\n"
+            f"{_menu_as_text()}",
+            reply_markup=create_menu_edit_cancel_keyboard(),
+        )
+        return
+
+    await message.answer("Выберите действие кнопкой.", reply_markup=create_menu_edit_keyboard())
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_add_name))
+async def menu_edit_add_name(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.set_state(MenuEditStates.waiting_for_action)
+        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        return
+
+    name = (message.text or "").strip()
+    if not name or _is_reserved_button(name):
+        await message.answer("Введите корректное название позиции.", reply_markup=create_menu_edit_cancel_keyboard())
+        return
+
+    await state.update_data(add_name=name)
+    await state.set_state(MenuEditStates.waiting_for_add_price)
+    await message.answer("Введите цену числом (например: <code>250</code>)", reply_markup=create_menu_edit_cancel_keyboard())
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_add_price))
+async def menu_edit_add_price(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.set_state(MenuEditStates.waiting_for_action)
+        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        return
+
+    try:
+        price = int((message.text or "").strip())
+        if price <= 0 or price > 100000:
+            raise ValueError
+    except Exception:
+        await message.answer("Цена должна быть числом (например 250).", reply_markup=create_menu_edit_cancel_keyboard())
+        return
+
+    data = await state.get_data()
+    name = data.get("add_name", "").strip()
+    if not name:
+        await state.clear()
+        await message.answer("Ошибка состояния. Начните заново.", reply_markup=create_menu_keyboard())
+        return
+
+    await menu_set_item(name, price)
+    await state.clear()
+    await message.answer(
+        "✅ Позиция добавлена.\n\n"
+        f"{_menu_as_text()}",
+        reply_markup=create_menu_keyboard(),
+    )
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_edit_name))
+async def menu_edit_edit_name(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.set_state(MenuEditStates.waiting_for_action)
+        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        return
+
+    name = (message.text or "").strip()
+    if name not in MENU:
+        await message.answer("Не нашёл такую позицию. Введите точное название из списка.", reply_markup=create_menu_edit_cancel_keyboard())
+        return
+
+    await state.update_data(edit_name=name)
+    await state.set_state(MenuEditStates.waiting_for_edit_price)
+    await message.answer(
+        f"Введите новую цену для <b>{html.quote(name)}</b> (числом):",
+        reply_markup=create_menu_edit_cancel_keyboard(),
+    )
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_edit_price))
+async def menu_edit_edit_price(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.set_state(MenuEditStates.waiting_for_action)
+        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        return
+
+    try:
+        price = int((message.text or "").strip())
+        if price <= 0 or price > 100000:
+            raise ValueError
+    except Exception:
+        await message.answer("Цена должна быть числом (например 270).", reply_markup=create_menu_edit_cancel_keyboard())
+        return
+
+    data = await state.get_data()
+    name = data.get("edit_name", "").strip()
+    if name not in MENU:
+        await state.clear()
+        await message.answer("Позиция не найдена. Начните заново.", reply_markup=create_menu_keyboard())
+        return
+
+    await menu_set_item(name, price)
+    await state.clear()
+    await message.answer("✅ Цена изменена.\n\n" + _menu_as_text(), reply_markup=create_menu_keyboard())
+
+
+@router.message(StateFilter(MenuEditStates.waiting_for_remove_name))
+async def menu_edit_remove(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+
+    if message.text == BTN_BACK:
+        await state.set_state(MenuEditStates.waiting_for_action)
+        await message.answer("Выберите действие:", reply_markup=create_menu_edit_keyboard())
+        return
+
+    name = (message.text or "").strip()
+    if name not in MENU:
+        await message.answer("Не нашёл такую позицию. Введите точное название из списка.", reply_markup=create_menu_edit_cancel_keyboard())
+        return
+
+    await menu_delete_item(name)
+    await state.clear()
+    await message.answer("🗑 Позиция удалена.\n\n" + _menu_as_text(), reply_markup=create_menu_keyboard())
+
+
+# -------------------------
+# Заказ (выбор напитка, количество, подтверждение)
+# -------------------------
+
+@router.message(StateFilter(None), F.text)
+async def text_router(message: Message, state: FSMContext):
+    """
+    Единая точка для текста вне FSM:
+    - если это напиток из меню -> запускаем заказ
+    - иначе даём мягкую подсказку
+    """
+    await register_demo_subscriber(message.from_user.id)
+
+    text = message.text or ""
+
+    if text in MENU:
+        # запуск заказа
+        user_id = message.from_user.id
+        name = get_user_name(message)
+        logger.info(f"🥤 {text} от {user_id}")
+
+        if not is_cafe_open():
+            await message.answer(get_closed_message(), reply_markup=create_info_keyboard())
+            return
+
+        drink = text
+        price = MENU[drink]
+
+        await state.set_state(OrderStates.waiting_for_quantity)
+        await state.set_data({"drink": drink, "price": price})
+
+        choice_text = random.choice(CHOICE_VARIANTS).format(name=name)
+
+        await message.answer(
+            f"{choice_text}\n\n"
+            f"🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price} ₽</b>\n\n📝 <b>Сколько порций?</b>",
+            reply_markup=create_quantity_keyboard(),
+        )
+        return
+
+    # если не напиток и не кнопка — подсказка
+    if not _is_reserved_button(text):
+        await message.answer("Выберите напиток кнопкой в меню или нажмите «Бронирование».", reply_markup=create_menu_keyboard())
 
 
 @router.message(StateFilter(OrderStates.waiting_for_quantity))
 async def process_quantity(message: Message, state: FSMContext):
-    if message.text == "🔙 Отмена":
+    await register_demo_subscriber(message.from_user.id)
+
+    if message.text == BTN_CANCEL:
         await state.clear()
         await message.answer(
             "❌ Заказ отменён",
@@ -362,7 +1081,7 @@ async def process_quantity(message: Message, state: FSMContext):
         return
 
     try:
-        quantity = int(message.text[0])
+        quantity = int((message.text or "")[0])
         if 1 <= quantity <= 5:
             data = await state.get_data()
             drink, price = data["drink"], data["price"]
@@ -377,52 +1096,19 @@ async def process_quantity(message: Message, state: FSMContext):
             )
         else:
             await message.answer("❌ Выберите от 1 до 5", reply_markup=create_quantity_keyboard())
-    except ValueError:
+    except Exception:
         await message.answer("❌ Нажмите на кнопку", reply_markup=create_quantity_keyboard())
-
-
-def _build_admin_order_messages(
-    *,
-    order_num: str,
-    user_id: int,
-    user_name: str,
-    drink: str,
-    quantity: int,
-    total: int,
-) -> tuple[str, str]:
-    safe_user_name = html.quote(user_name)
-    safe_drink = html.quote(drink)
-
-    user_link = f'<a href="tg://user?id={user_id}">{safe_user_name}</a>'
-
-    admin_message = (
-        f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
-        f"{user_link}\n"
-        f"<code>{user_id}</code>\n\n"
-        f"{safe_drink}\n"
-        f"{quantity} порций\n"
-        f"<b>{total} ₽</b>\n\n"
-        f"Нажми на имя, чтобы открыть чат и ответить клиенту."
-    )
-
-    admin_demo_message = (
-        "ℹ️ <b>ПРИМЕР ПОДТВЕРЖДЁННОГО ЗАКАЗА (КАК ВИДИТ АДМИН)</b>\n\n"
-        "В рабочем режиме бот будет присылать вам каждое подтверждение заказа в таком виде.\n"
-        f"Выше — только что оформленный заказ гостя #{order_num}.\n\n"
-        "Нажмите на имя клиента, чтобы открыть чат и уточнить детали."
-    )
-
-    return admin_message, admin_demo_message
 
 
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
 async def process_confirmation(message: Message, state: FSMContext):
-    if message.text == "Подтвердить":
-        user_id = message.from_user.id
+    await register_demo_subscriber(message.from_user.id)
 
+    if message.text == BTN_CONFIRM:
         # rate-limit после подтверждения
         try:
             r_client = await get_redis_client()
+            user_id = message.from_user.id
             last_order = await r_client.get(_rate_limit_key(user_id))
             if last_order and time.time() - float(last_order) < RATE_LIMIT_SECONDS:
                 await message.answer(
@@ -439,11 +1125,11 @@ async def process_confirmation(message: Message, state: FSMContext):
 
         data = await state.get_data()
         drink, quantity, total = data["drink"], data["quantity"], data["total"]
-
-        order_id = f"order:{int(time.time())}:{user_id}"
+        order_id = f"order:{int(time.time())}:{message.from_user.id}"
         order_num = order_id.split(":")[-1]
 
         user_name = message.from_user.username or message.from_user.first_name or "Клиент"
+        user_id = message.from_user.id
 
         # сохраняем заказ + статистику
         try:
@@ -466,7 +1152,8 @@ async def process_confirmation(message: Message, state: FSMContext):
         except Exception:
             pass
 
-        admin_message, admin_demo_message = _build_admin_order_messages(
+        # "как видит админ" — всем тестерам (и админу)
+        msg1, msg2 = build_admin_order_messages(
             order_num=order_num,
             user_id=user_id,
             user_name=user_name,
@@ -474,18 +1161,8 @@ async def process_confirmation(message: Message, state: FSMContext):
             quantity=quantity,
             total=total,
         )
-
-        # 1) Отправляем админу (как и раньше)
-        try:
-            await message.bot.send_message(ADMIN_ID, admin_message, disable_web_page_preview=True)
-            await message.bot.send_message(ADMIN_ID, admin_demo_message, disable_web_page_preview=True)
-        except Exception as e:
-            logger.exception(f"ADMIN notify failed (ADMIN_ID={ADMIN_ID}): {e}")
-
-        # 2) DEMO: показываем пользователю тот же "админский" формат у него в чате
-        if DEMO_MODE:
-            await message.answer(admin_message, reply_markup=create_menu_keyboard())
-            await message.answer(admin_demo_message, reply_markup=create_menu_keyboard())
+        await send_to_demo_audience(message.bot, msg1, include_admin=True)
+        await send_to_demo_audience(message.bot, msg2, include_admin=True)
 
         finish_text = random.choice(FINISH_VARIANTS).format(name=get_user_name(message))
 
@@ -499,91 +1176,12 @@ async def process_confirmation(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    if message.text == "Меню":
+    if message.text == BTN_MENU:
         await state.clear()
         await message.answer("☕ Меню:", reply_markup=create_menu_keyboard())
         return
 
     await message.answer("❌ Нажмите кнопку", reply_markup=create_confirm_keyboard())
-
-
-@router.message(F.text == "📞 Позвонить")
-async def call_phone(message: Message):
-    name = get_user_name(message)
-    if is_cafe_open():
-        text = (
-            f"{name}, буду рад помочь!\n\n"
-            f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
-            f"Если удобнее — можешь просто выбрать напиток в меню, я всё оформлю здесь."
-        )
-        await message.answer(text, reply_markup=create_menu_keyboard())
-    else:
-        text = (
-            f"{name}, сейчас мы закрыты, но я всё равно подскажу.\n\n"
-            f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
-            f"⏰ {get_work_status()}\n\n"
-            f"Хочешь — посмотри меню, а заказ оформим, как только откроемся."
-        )
-        await message.answer(text, reply_markup=create_info_keyboard())
-
-
-@router.message(F.text == "⏰ Часы работы")
-async def show_hours(message: Message):
-    name = get_user_name(message)
-    msk_time = get_moscow_time().strftime("%H:%M")
-    if is_cafe_open():
-        text = (
-            f"{name}, мы сейчас на месте и готовим вкусное.\n\n"
-            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
-            f"🏪 {get_work_status()}\n\n"
-            f"📞 Если нужно уточнить детали: <code>{html.quote(CAFE_PHONE)}</code>\n"
-            f"Выбирай напиток в меню — оформлю заказ за минуту."
-        )
-        await message.answer(text, reply_markup=create_menu_keyboard())
-    else:
-        text = (
-            f"{name}, спасибо что заглянул!\n\n"
-            f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
-            f"🏪 {get_work_status()}\n\n"
-            f"📞 Телефон: <code>{html.quote(CAFE_PHONE)}</code>\n"
-            f"Пока можем показать меню — напиши /start."
-        )
-        await message.answer(text, reply_markup=create_info_keyboard())
-
-
-@router.message(Command("stats"))
-async def stats_command(message: Message):
-    # /stats оставим как "реальная админская команда"
-    if message.from_user.id != ADMIN_ID:
-        if DEMO_MODE:
-            await _send_demo_stats(message)
-        return
-    await _send_real_stats(message)
-
-
-@router.message(F.text == "📊 Статистика")
-async def stats_button(message: Message):
-    # В DEMO кнопку видят все: админу — реальная, пользователю — пример
-    if message.from_user.id == ADMIN_ID:
-        await _send_real_stats(message)
-    else:
-        await _send_demo_stats(message)
-
-
-@router.message(Command("help"))
-async def help_command(message: Message):
-    text = (
-        "Этот бот — демо-ассистент для кофейни.\n\n"
-        "Что он умеет:\n"
-        "• Показывать меню и часы работы\n"
-        "• Принимать быстрые заказы прямо в чате\n"
-        "• Отправлять уведомления администратору с данными клиента\n"
-        "• Показывать пример того, как админ видит подтверждённый заказ (DEMO)\n"
-        "• Показывать статистику (в демо — пример)\n\n"
-        "Хотите такой бот для своей кофейни?\n"
-        "Связаться в Telegram: @denvyd"
-    )
-    await message.answer(text, reply_markup=create_menu_keyboard())
 
 
 # -------------------------
@@ -604,6 +1202,9 @@ async def on_startup(bot: Bot) -> None:
         logger.info("✅ Redis подключён")
     except Exception as e:
         logger.error(f"❌ Redis: {e}")
+
+    # синхронизируем меню с Redis (для редактирования)
+    await sync_menu_from_redis()
 
     try:
         current_webhook = await bot.get_webhook_info()
