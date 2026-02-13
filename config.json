@@ -8,7 +8,7 @@
 
     "work_hours": [9, 21],
 
-    "return_cycle_days": 7,
+    "return_cycle_days": 1,
 
     "menu": {
       "☕ Капучино": 250,
