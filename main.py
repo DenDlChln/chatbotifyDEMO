@@ -1,16 +1,22 @@
 # =========================
 # CafeBotify — START v1.0 (DEMO)
-# Меню и часы работы из config.json
-# Rate-limit: 1 минута, ставится только после оформленного заказа (после выбора времени готовности)
+# Меню/часы/адрес/цикл возврата из config.json
+# Webhook + Redis (aiogram 3)
 #
-# DEMO:
-# - После заказа всем тестерам (кто нажал /start) приходят 2 сообщения "как видит админ"
-# - После брони всем тестерам (кто нажал /start) приходят 2 сообщения "как видит админ"
-# - Кнопка 📊 Статистика видна всем (не-админу показываем демо-отчёт)
-# - 🛠 Меню: админ может добавлять/править/удалять позиции (хранение в Redis)
+# Фичи:
+# - Заказ по кнопкам напитков (ReplyKeyboard)
+# - Время готовности: "Сейчас" / "Через 20 мин" / "Отмена"
+# - Бронирование (заявка -> DEMO аудитории "как видит админ")
+# - Статистика (админу реальная, остальным demo)
+# - Редактирование меню (админ, хранение в Redis)
+# - DEMO: "как видит админ" отправляем всем тестерам (кто нажал /start), включая админа
 #
-# READY TIME:
-# - После "Подтвердить" -> выбор: "Сейчас" или "Через 20 мин" или "Отмена"
+# NEW: Умный возврат гостей (не "рассылка по базе", а триггер по активности)
+# - После каждого заказа сохраняем профиль клиента в Redis
+# - Если нет заказов RETURN_CYCLE_DAYS -> персональное сообщение
+# - Не чаще 1 раза в 30 дней
+# - Окно отправки 10:00–20:00 МСК
+# - Отписка: /offers_off, включить: /offers_on
 # =========================
 
 import os
@@ -50,6 +56,18 @@ DEMO_SUBSCRIBERS_KEY = "demo:subscribers"
 
 MENU_REDIS_KEY = "menu:items"  # hash: {drink_name: price}
 
+# ---------- "умный возврат гостей" настройки ----------
+CUSTOMERS_SET_KEY = "customers:set"
+CUSTOMER_KEY_PREFIX = "customer:"             # hash customer:{user_id}
+CUSTOMER_DRINKS_PREFIX = "customer:drinks:"   # hash customer:drinks:{user_id} -> counts per drink
+
+DEFAULT_RETURN_CYCLE_DAYS = 7          # кофейня: 7, кафе: 14 (берём из config.json)
+RETURN_COOLDOWN_DAYS = 30              # триггер не чаще 1 раза в 30 дней
+RETURN_CHECK_EVERY_SECONDS = 6 * 60 * 60  # проверка раз в 6 часов
+RETURN_SEND_FROM_HOUR = 10             # не пишем ночью
+RETURN_SEND_TO_HOUR = 20               # верхняя граница (не включительно)
+RETURN_DISCOUNT_PERCENT = 10
+
 
 def get_moscow_time() -> datetime:
     return datetime.now(MSK_TZ)
@@ -74,12 +92,14 @@ def load_config() -> Dict[str, Any]:
         "admin_chat_id": 1471275603,
         "work_start": 9,
         "work_end": 21,
+        "address": "г. Краснодар, ул. Красная, 123",
         "menu": {
             "☕ Капучино": 250,
             "🥛 Латте": 270,
             "🍵 Чай": 180,
             "⚡ Эспрессо": 200,
         },
+        "return_cycle_days": DEFAULT_RETURN_CYCLE_DAYS,
     }
 
     try:
@@ -92,7 +112,9 @@ def load_config() -> Dict[str, Any]:
                     "name": cafe.get("name", default_config["name"]),
                     "phone": cafe.get("phone", default_config["phone"]),
                     "admin_chat_id": cafe.get("admin_chat_id", default_config["admin_chat_id"]),
+                    "address": cafe.get("address", default_config["address"]),
                     "menu": cafe.get("menu", default_config["menu"]),
+                    "return_cycle_days": int(cafe.get("return_cycle_days", default_config["return_cycle_days"])),
                 }
             )
 
@@ -112,6 +134,13 @@ def load_config() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # safety
+    try:
+        if int(default_config["return_cycle_days"]) <= 0:
+            default_config["return_cycle_days"] = DEFAULT_RETURN_CYCLE_DAYS
+    except Exception:
+        default_config["return_cycle_days"] = DEFAULT_RETURN_CYCLE_DAYS
+
     return default_config
 
 
@@ -120,11 +149,14 @@ cafe_config = load_config()
 CAFE_NAME = cafe_config["name"]
 CAFE_PHONE = cafe_config["phone"]
 ADMIN_ID = int(cafe_config["admin_chat_id"])
+CAFE_ADDRESS = cafe_config.get("address", "")
 
 MENU: Dict[str, int] = dict(cafe_config["menu"])  # синхронизируется с Redis
 
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
+
+RETURN_CYCLE_DAYS = int(cafe_config.get("return_cycle_days", DEFAULT_RETURN_CYCLE_DAYS))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
@@ -281,6 +313,199 @@ async def menu_delete_item(drink: str):
         pass
 
 
+# ---------- умный возврат гостей: профиль ----------
+
+async def customer_mark_order(
+    *,
+    user_id: int,
+    first_name: str,
+    username: str,
+    drink: str,
+    total_sum: int,
+):
+    now_ts = int(time.time())
+    customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+    drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
+
+    try:
+        r = await get_redis_client()
+        pipe = r.pipeline()
+
+        pipe.sadd(CUSTOMERS_SET_KEY, user_id)
+
+        pipe.hsetnx(customer_key, "first_order_ts", now_ts)
+        pipe.hsetnx(customer_key, "offers_opt_out", 0)
+        pipe.hsetnx(customer_key, "last_trigger_ts", 0)
+
+        pipe.hset(customer_key, mapping={
+            "first_name": first_name or "",
+            "username": username or "",
+            "last_order_ts": now_ts,
+            "last_order_sum": int(total_sum),
+            "last_drink": drink,
+        })
+
+        pipe.hincrby(customer_key, "total_orders", 1)
+        pipe.hincrby(customer_key, "total_spent", int(total_sum))
+
+        pipe.hincrby(drinks_key, drink, 1)
+
+        await pipe.execute()
+        await r.aclose()
+    except Exception as e:
+        logger.error(f"❌ customer_mark_order error: {e}")
+
+
+async def customer_set_offers_opt(user_id: int, opt_out: bool):
+    customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+    try:
+        r = await get_redis_client()
+        await r.hset(customer_key, "offers_opt_out", 1 if opt_out else 0)
+        await r.sadd(CUSTOMERS_SET_KEY, user_id)
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def _get_favorite_drink(user_id: int) -> str:
+    drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
+    try:
+        r = await get_redis_client()
+        data = await r.hgetall(drinks_key)
+        await r.aclose()
+        if not data:
+            return ""
+        best_name = ""
+        best_cnt = -1
+        for k, v in data.items():
+            try:
+                name = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                cnt = int(v.decode("utf-8")) if isinstance(v, (bytes, bytearray)) else int(v)
+                if cnt > best_cnt:
+                    best_cnt = cnt
+                    best_name = name
+            except Exception:
+                continue
+        return best_name
+    except Exception:
+        return ""
+
+
+def _in_send_window_msk() -> bool:
+    h = get_moscow_time().hour
+    return RETURN_SEND_FROM_HOUR <= h < RETURN_SEND_TO_HOUR
+
+
+def _promo_code(user_id: int) -> str:
+    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
+
+
+async def smart_return_check_and_send(bot: Bot):
+    if not _in_send_window_msk():
+        return
+
+    now_ts = int(time.time())
+
+    try:
+        r = await get_redis_client()
+        ids = await r.smembers(CUSTOMERS_SET_KEY)
+        await r.aclose()
+    except Exception:
+        ids = []
+
+    for raw_id in ids:
+        try:
+            user_id = int(raw_id)
+        except Exception:
+            continue
+
+        customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+
+        try:
+            r = await get_redis_client()
+            profile = await r.hgetall(customer_key)
+            await r.aclose()
+        except Exception:
+            profile = {}
+
+        if not profile:
+            continue
+
+        def _get(field: str) -> str:
+            v = profile.get(field.encode("utf-8"), profile.get(field))
+            if v is None:
+                return ""
+            if isinstance(v, (bytes, bytearray)):
+                return v.decode("utf-8", errors="ignore")
+            return str(v)
+
+        if _get("offers_opt_out") == "1":
+            continue
+
+        last_order_ts_str = _get("last_order_ts")
+        if not last_order_ts_str:
+            continue
+
+        try:
+            last_order_ts = int(float(last_order_ts_str))
+        except Exception:
+            continue
+
+        days_since = (now_ts - last_order_ts) // 86400
+        if days_since < RETURN_CYCLE_DAYS:
+            continue
+
+        last_trigger_ts_str = _get("last_trigger_ts")
+        try:
+            last_trigger_ts = int(float(last_trigger_ts_str)) if last_trigger_ts_str else 0
+        except Exception:
+            last_trigger_ts = 0
+
+        if last_trigger_ts and (now_ts - last_trigger_ts) < (RETURN_COOLDOWN_DAYS * 86400):
+            continue
+
+        first_name = _get("first_name") or "друг"
+        favorite = await _get_favorite_drink(user_id)
+        if not favorite:
+            favorite = _get("last_drink") or "напиток"
+
+        promo = _promo_code(user_id)
+
+        text = (
+            f"{html.quote(first_name)}, давно не виделись ☕\n\n"
+            f"Ваш любимый <b>{html.quote(favorite)}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
+            f"Промокод: <code>{promo}</code>\n\n"
+            "Сделаем заказ? Нажмите /start и выберите напиток.\n\n"
+            "Не хотите получать такие сообщения — отправьте /offers_off"
+        )
+
+        try:
+            await bot.send_message(user_id, text, disable_web_page_preview=True)
+            try:
+                r = await get_redis_client()
+                await r.hset(customer_key, "last_trigger_ts", now_ts)
+                await r.aclose()
+            except Exception:
+                pass
+        except Exception:
+            # если нельзя отправить (пользователь удалил/заблокировал) — больше не трогаем
+            try:
+                r = await get_redis_client()
+                await r.srem(CUSTOMERS_SET_KEY, user_id)
+                await r.aclose()
+            except Exception:
+                pass
+
+
+async def smart_return_loop(bot: Bot):
+    while True:
+        try:
+            await smart_return_check_and_send(bot)
+        except Exception as e:
+            logger.error(f"❌ smart_return_loop error: {e}")
+        await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
+
+
 # ---------- кнопки ----------
 
 BTN_CALL = "📞 Позвонить"
@@ -390,7 +615,7 @@ def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# ---------- тёплые тексты ----------
+# ---------- тексты ----------
 
 WELCOME_VARIANTS = [
     "Рад тебя видеть, {name}! Сегодня что-то классическое или попробуем новинку?",
@@ -420,11 +645,18 @@ FINISH_VARIANTS = [
 ]
 
 
+def _address_line() -> str:
+    if not CAFE_ADDRESS:
+        return ""
+    return f"\n📍 <b>Адрес:</b> {html.quote(CAFE_ADDRESS)}"
+
+
 def get_closed_message() -> str:
     menu_text = " • ".join([f"<b>{html.quote(drink)}</b> {price}₽" for drink, price in MENU.items()])
     return (
         f"🔒 <b>{html.quote(CAFE_NAME)} сейчас закрыто!</b>\n\n"
-        f"⏰ {get_work_status()}\n\n"
+        f"⏰ {get_work_status()}"
+        f"{_address_line()}\n\n"
         f"☕ <b>Наше меню:</b>\n{menu_text}\n\n"
         f"📞 <b>Связаться:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
         f"✨ <i>До скорой встречи!</i>"
@@ -527,7 +759,7 @@ def build_admin_order_messages(
         f"{quantity} порций\n"
         f"<b>{total} ₽</b>\n"
         f"{_format_ready_line(ready_in_min)}\n\n"
-        f"Нажми на имя, чтобы открыть чат и ответить клиенту."
+        "Нажми на имя, чтобы открыть чат и ответить клиенту."
     )
 
     msg2 = (
@@ -559,7 +791,7 @@ def build_admin_booking_messages(
         f"🗓 {safe_dt}\n"
         f"👥 {people} чел.\n"
         f"💬 {safe_comment}\n\n"
-        f"Нажми на имя, чтобы открыть чат и ответить клиенту."
+        "Нажми на имя, чтобы открыть чат и ответить клиенту."
     )
 
     msg2 = (
@@ -569,6 +801,27 @@ def build_admin_booking_messages(
         "Нажмите на имя клиента, чтобы открыть чат и уточнить детали."
     )
     return msg1, msg2
+
+
+# -------------------------
+# Команды офферов (умный возврат)
+# -------------------------
+
+@router.message(Command("offers_off"))
+async def offers_off(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    await customer_set_offers_opt(message.from_user.id, opt_out=True)
+    await message.answer(
+        "Ок, больше не буду отправлять персональные предложения.\n/offers_on — включить обратно.",
+        reply_markup=create_menu_keyboard(),
+    )
+
+
+@router.message(Command("offers_on"))
+async def offers_on(message: Message):
+    await register_demo_subscriber(message.from_user.id)
+    await customer_set_offers_opt(message.from_user.id, opt_out=False)
+    await message.answer("Готово! Персональные предложения включены.", reply_markup=create_menu_keyboard())
 
 
 # -------------------------
@@ -591,8 +844,9 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer(
             f"{welcome}\n\n"
             f"🕐 <i>Московское время: {msk_time}</i>\n"
-            f"🏪 {get_work_status()}\n\n"
-            f"☕ <b>Выберите напиток:</b>",
+            f"🏪 {get_work_status()}"
+            f"{_address_line()}\n\n"
+            "☕ <b>Выберите напиток:</b>",
             reply_markup=create_menu_keyboard(),
         )
     else:
@@ -600,7 +854,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Общие кнопки (обработчики должны быть выше общего F.text)
+# Общие кнопки (обработчики выше общего F.text)
 # -------------------------
 
 @router.message(F.text == BTN_STATS)
@@ -637,7 +891,8 @@ async def call_phone(message: Message):
         text = (
             f"{name}, сейчас мы закрыты, но я всё равно подскажу.\n\n"
             f"📞 <b>Телефон {html.quote(CAFE_NAME)}:</b>\n<code>{html.quote(CAFE_PHONE)}</code>\n\n"
-            f"⏰ {get_work_status()}\n\n"
+            f"⏰ {get_work_status()}"
+            f"{_address_line()}\n\n"
             "Хочешь — посмотри меню, а заказ оформим, как только откроемся."
         )
         await message.answer(text, reply_markup=create_info_keyboard())
@@ -651,7 +906,8 @@ async def show_hours(message: Message):
     text = (
         f"{name}, вот актуальная информация:\n\n"
         f"🕐 <b>Сейчас:</b> {msk_time} (МСК)\n"
-        f"🏪 {get_work_status()}\n\n"
+        f"🏪 {get_work_status()}"
+        f"{_address_line()}\n\n"
         f"📞 Телефон: <code>{html.quote(CAFE_PHONE)}</code>"
     )
     await message.answer(text, reply_markup=create_menu_keyboard() if is_cafe_open() else create_info_keyboard())
@@ -784,6 +1040,18 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
         await r_client.incr("stats:total_orders")
         await r_client.incr(f"stats:drink:{drink}")
         await r_client.aclose()
+    except Exception:
+        pass
+
+    # сохраняем профиль клиента для "умного возврата"
+    try:
+        await customer_mark_order(
+            user_id=user_id,
+            first_name=message.from_user.first_name or "",
+            username=message.from_user.username or "",
+            drink=drink,
+            total_sum=int(total),
+        )
     except Exception:
         pass
 
@@ -1214,7 +1482,10 @@ async def help_command(message: Message):
         "• Меню и быстрые заказы\n"
         "• Время готовности (сейчас / через 20 минут)\n"
         "• Заявки на бронирование\n"
-        "• Статистика (в демо — пример)\n\n"
+        "• Умный возврат гостей (персонально, не чаще 1 раза в 30 дней)\n\n"
+        "Команды:\n"
+        "• /offers_off — отключить персональные предложения\n"
+        "• /offers_on — включить обратно\n\n"
         "Связаться: @denvyd"
     )
     await message.answer(text, reply_markup=create_menu_keyboard())
@@ -1224,11 +1495,18 @@ async def help_command(message: Message):
 # Startup / Webhook
 # -------------------------
 
+_smart_return_task: Optional[asyncio.Task] = None
+
+
 async def on_startup(bot: Bot) -> None:
+    global _smart_return_task
+
     logger.info("🚀 Запуск бота (START v1.0 DEMO)...")
     logger.info(f"☕ Кафе: {CAFE_NAME}")
+    logger.info(f"📍 Адрес: {CAFE_ADDRESS}")
     logger.info(f"⏰ Часы работы: {WORK_START}:00–{WORK_END}:00 (МСК)")
     logger.info(f"⏳ Rate-limit: {RATE_LIMIT_SECONDS} сек.")
+    logger.info(f"🔁 Return cycle days: {RETURN_CYCLE_DAYS} (cooldown {RETURN_COOLDOWN_DAYS}d)")
     logger.info(f"🔗 Webhook (target): {WEBHOOK_URL}")
 
     try:
@@ -1240,6 +1518,14 @@ async def on_startup(bot: Bot) -> None:
         logger.error(f"❌ Redis: {e}")
 
     await sync_menu_from_redis()
+
+    # фоновая проверка "умного возврата"
+    try:
+        if _smart_return_task is None or _smart_return_task.done():
+            _smart_return_task = asyncio.create_task(smart_return_loop(bot))
+            logger.info("✅ Smart return loop started")
+    except Exception as e:
+        logger.error(f"❌ Smart return loop start error: {e}")
 
     try:
         current_webhook = await bot.get_webhook_info()
@@ -1286,6 +1572,13 @@ async def main():
     setup_application(app, dp, bot=bot)
 
     async def _on_shutdown(a: web.Application):
+        global _smart_return_task
+        try:
+            if _smart_return_task and not _smart_return_task.done():
+                _smart_return_task.cancel()
+        except Exception:
+            pass
+
         try:
             await bot.delete_webhook()
         except Exception:
