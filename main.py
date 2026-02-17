@@ -132,6 +132,7 @@ CAFE_ADDRESS = cafe_config.get("address", "")
 MENU: Dict[str, int] = dict(cafe_config["menu"])
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
+
 RETURN_CYCLE_DAYS = int(cafe_config.get("return_cycle_days", DEFAULT_RETURN_CYCLE_DAYS))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -510,14 +511,13 @@ MENU_EDIT_DEL = "🗑 Удалить позицию"
 
 # ---------- Keyboards ----------
 def create_main_keyboard() -> ReplyKeyboardMarkup:
-    # Главное: is_persistent=True, чтобы iOS не “терял” клавиатуру. [web:60]
     kb: list[list[KeyboardButton]] = []
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
     kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
     kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)  # [web:60]
 
 
 def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
@@ -531,7 +531,7 @@ def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
     kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)  # [web:60]
 
 
 def create_quantity_keyboard() -> ReplyKeyboardMarkup:
@@ -541,7 +541,7 @@ def create_quantity_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="4️⃣"), KeyboardButton(text="5️⃣"), KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -552,7 +552,7 @@ def create_confirm_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL_ORDER)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -563,7 +563,7 @@ def create_ready_time_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -572,7 +572,7 @@ def create_cart_pick_item_keyboard(cart: Dict[str, int]) -> ReplyKeyboardMarkup:
     for drink in cart.keys():
         rows.append([KeyboardButton(text=drink)])
     rows.append([KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_CART)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True)  # [web:60]
 
 
 def create_cart_edit_actions_keyboard() -> ReplyKeyboardMarkup:
@@ -583,7 +583,7 @@ def create_cart_edit_actions_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -594,7 +594,7 @@ def create_info_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        is_persistent=True,  # [web:60]
     )
 
 
@@ -602,7 +602,7 @@ def create_booking_cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=BTN_CANCEL), KeyboardButton(text=BTN_MENU)]],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -614,7 +614,7 @@ def create_booking_people_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="9"), KeyboardButton(text="10"), KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
@@ -625,12 +625,12 @@ def create_menu_edit_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=MENU_EDIT_DEL), KeyboardButton(text=BTN_BACK)],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True,
+        one_time_keyboard=True,  # [web:60]
     )
 
 
 def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_BACK)]], resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_BACK)]], resize_keyboard=True, one_time_keyboard=True)  # [web:60]
 
 
 # ---------- Text helpers ----------
@@ -824,14 +824,31 @@ async def show_hours(message: Message):
 @router.message(F.text == BTN_STATS)
 async def stats_button(message: Message):
     await register_demo_subscriber(message.from_user.id)
+
     if message.from_user.id != ADMIN_ID:
         await message.answer("📊 <b>Статистика (DEMO)</b>\n\nВсего заказов: <b>123</b>", reply_markup=create_main_keyboard())
         return
+
     try:
         r_client = await get_redis_client()
         total_orders = int(await r_client.get("stats:total_orders") or 0)
+        total_revenue = int(await r_client.get("stats:total_revenue") or 0)
+
+        lines = []
+        for drink, price in MENU.items():
+            cnt = int(await r_client.get(f"stats:drink:{drink}") or 0)
+            rev = int(await r_client.get(f"stats:drink_revenue:{drink}") or 0)
+            lines.append(f"• {html.quote(drink)}: <b>{cnt}</b> шт., <b>{rev}₽</b>")
+
         await r_client.aclose()
-        await message.answer(f"📊 <b>Статистика</b>\n\nВсего заказов: <b>{total_orders}</b>", reply_markup=create_main_keyboard())
+
+        text = (
+            "📊 <b>Статистика</b>\n\n"
+            f"Всего заказов: <b>{total_orders}</b>\n"
+            f"Выручка всего: <b>{total_revenue}₽</b>\n\n"
+            "<b>По позициям:</b>\n" + "\n".join(lines)
+        )
+        await message.answer(text, reply_markup=create_main_keyboard())
     except Exception:
         await message.answer("❌ Ошибка статистики", reply_markup=create_main_keyboard())
 
@@ -889,10 +906,8 @@ async def process_quantity(message: Message, state: FSMContext):
     await register_demo_subscriber(message.from_user.id)
 
     if message.text == BTN_CANCEL:
-        # iOS: сразу возвращаем persistent клавиатуру
         data = await state.get_data()
         cart = _get_cart(data)
-        await state.set_state(OrderStates.cart_view if cart else None)
         await message.answer("Ок. Добавление отменено.", reply_markup=create_cart_keyboard(bool(cart)) if cart else create_main_keyboard())
         return
 
@@ -917,8 +932,10 @@ async def process_quantity(message: Message, state: FSMContext):
     await state.update_data(cart=cart)
     await state.set_state(OrderStates.cart_view)
 
-    # Сразу показываем корзину + persistent клавиатуру
-    await message.answer(f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {quantity}\n\n{_cart_text(cart)}", reply_markup=create_cart_keyboard(True))
+    await message.answer(
+        f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {quantity}\n\n{_cart_text(cart)}",
+        reply_markup=create_cart_keyboard(True),
+    )
 
 
 # -------------------------
@@ -1050,7 +1067,6 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
         await message.answer("Корзина пустая. Нажмите /start.", reply_markup=create_main_keyboard())
         return
 
-    # rate-limit (после финализации)
     try:
         r_client = await get_redis_client()
         last_order = await r_client.get(_rate_limit_key(user_id))
@@ -1090,9 +1106,15 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
         )
         await r_client.expire(order_id, 86400)
 
+        # ---- Stats counters ----
         await r_client.incr("stats:total_orders")
+        await r_client.incrby("stats:total_revenue", int(total))  # [web:216]
+
         for drink, qty in cart.items():
-            await r_client.incrby(f"stats:drink:{drink}", int(qty))
+            qty_i = int(qty)
+            price = int(MENU.get(drink, 0))
+            await r_client.incrby(f"stats:drink:{drink}", qty_i)  # [web:216]
+            await r_client.incrby(f"stats:drink_revenue:{drink}", qty_i * price)  # [web:216]
 
         await r_client.aclose()
     except Exception:
@@ -1151,7 +1173,7 @@ async def process_ready_time(message: Message, state: FSMContext):
 
 
 # -------------------------
-# Booking (как раньше, компактно)
+# Booking (компактно)
 # -------------------------
 @router.message(F.text == BTN_BOOKING)
 async def booking_start(message: Message, state: FSMContext):
@@ -1438,21 +1460,13 @@ async def on_startup(bot: Bot) -> None:
     logger.info(f"⏰ Часы: {WORK_START}:00–{WORK_END}:00 (МСК)")
     logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
 
-    try:
-        r_test = redis.from_url(REDIS_URL)
-        await r_test.ping()
-        await r_test.aclose()
-        logger.info("✅ Redis подключён")
-    except Exception as e:
-        logger.error(f"❌ Redis: {e}")
-
     await sync_menu_from_redis()
 
     try:
         if _smart_return_task is None or _smart_return_task.done():
             _smart_return_task = asyncio.create_task(smart_return_loop(bot))
-    except Exception as e:
-        logger.error(f"❌ Smart return loop start error: {e}")
+    except Exception:
+        pass
 
     try:
         await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
