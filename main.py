@@ -5,7 +5,7 @@ import asyncio
 import time
 import random
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Dict, Any, Optional, Tuple
 
 import redis.asyncio as redis
@@ -35,14 +35,16 @@ STATS_TOTAL_REVENUE = "stats:total_revenue"
 STATS_DRINK_PREFIX = "stats:drink:"
 STATS_DRINK_REV_PREFIX = "stats:drink_revenue:"
 
-# per-user history
-HISTORY_KEY_PREFIX = "history:"  # list history:{user_id}
-HISTORY_KEEP_LAST = 50
+# user keys
+LAST_SEEN_KEY_PREFIX = "last_seen:"         # string ts
+LAST_ORDER_KEY_PREFIX = "last_order:"       # string json
+RETURN_OFFER_KEY_PREFIX = "return_offer:"   # string json snapshot
 
-# smart return (optional keep)
+# smart return
 CUSTOMERS_SET_KEY = "customers:set"
 CUSTOMER_KEY_PREFIX = "customer:"
 CUSTOMER_DRINKS_PREFIX = "customer:drinks:"
+
 DEFAULT_RETURN_CYCLE_DAYS = 7
 RETURN_COOLDOWN_DAYS = 30
 RETURN_CHECK_EVERY_SECONDS = 6 * 60 * 60
@@ -128,6 +130,7 @@ CAFE_ADDRESS = cafe_config.get("address", "")
 MENU: Dict[str, int] = dict(cafe_config["menu"])
 WORK_START = int(cafe_config["work_start"])
 WORK_END = int(cafe_config["work_end"])
+
 RETURN_CYCLE_DAYS = int(cafe_config.get("return_cycle_days", DEFAULT_RETURN_CYCLE_DAYS))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -144,7 +147,6 @@ router = Router()
 
 # ---------------- Redis ----------------
 async def get_redis_client():
-    # decode_responses=True -> строки, не bytes
     client = redis.from_url(REDIS_URL, decode_responses=True)
     await client.ping()
     return client
@@ -154,33 +156,16 @@ def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
 
 
-def _history_key(user_id: int) -> str:
-    return f"{HISTORY_KEY_PREFIX}{user_id}"
+def _last_seen_key(user_id: int) -> str:
+    return f"{LAST_SEEN_KEY_PREFIX}{user_id}"
 
 
-async def history_add(user_id: int, line: str):
-    """
-    Добавляем запись в историю пользователя (список Redis) и подрезаем до последних N.
-    LIST + LRANGE удобны для "истории по пользователю". [web:260][web:259]
-    """
-    try:
-        r = await get_redis_client()
-        # кладём в голову, чтобы последние были первыми
-        await r.lpush(_history_key(user_id), line)
-        await r.ltrim(_history_key(user_id), 0, HISTORY_KEEP_LAST - 1)
-        await r.aclose()
-    except Exception:
-        pass
+def _last_order_key(user_id: int) -> str:
+    return f"{LAST_ORDER_KEY_PREFIX}{user_id}"
 
 
-async def history_get(user_id: int, limit: int = 20) -> list[str]:
-    try:
-        r = await get_redis_client()
-        items = await r.lrange(_history_key(user_id), 0, max(0, limit - 1))  # LRANGE [web:259]
-        await r.aclose()
-        return list(items or [])
-    except Exception:
-        return []
+def _return_offer_key(user_id: int) -> str:
+    return f"{RETURN_OFFER_KEY_PREFIX}{user_id}"
 
 
 # ---------------- States ----------------
@@ -236,6 +221,15 @@ def get_closed_message() -> str:
 
 def get_user_name(message: Message) -> str:
     return (message.from_user.first_name if message.from_user else None) or "друг"
+
+
+# ---------------- Admin notify (ONLY admin) ----------------
+async def send_admin_only(bot: Bot, text: str):
+    # Сообщение получает только чат ADMIN_ID. [web:112]
+    try:
+        await bot.send_message(ADMIN_ID, text, disable_web_page_preview=True)
+    except Exception:
+        pass
 
 
 # ---------------- Menu sync ----------------
@@ -322,11 +316,73 @@ async def _show_cart(message: Message, state: FSMContext):
     await message.answer(_cart_text(cart), reply_markup=create_cart_keyboard(bool(cart)))
 
 
-# ---------------- Admin notify (ONLY admin) ----------------
-async def send_admin_only(bot: Bot, text: str):
-    # Сообщение получает только чат ADMIN_ID. [web:112]
+# ---------------- Repeat-last-order offer ----------------
+BTN_REPEAT_LAST = "🔁 Повторить последний заказ"
+BTN_REPEAT_NO = "❌ Нет, спасибо"
+
+
+def create_repeat_offer_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REPEAT_LAST), KeyboardButton(text=BTN_REPEAT_NO)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def should_offer_repeat(user_id: int) -> bool:
+    """
+    Предлагаем повтор, если последний заход был не сегодня (по МСК) и есть last_order.
+    """
     try:
-        await bot.send_message(ADMIN_ID, text, disable_web_page_preview=True)
+        r = await get_redis_client()
+        last_seen = await r.get(_last_seen_key(user_id))
+        last_order = await r.get(_last_order_key(user_id))
+        await r.aclose()
+    except Exception:
+        return False
+
+    if not last_order:
+        return False
+    if not last_seen:
+        return False
+
+    try:
+        last_seen_dt = datetime.fromtimestamp(float(last_seen), tz=MSK_TZ)
+    except Exception:
+        return False
+
+    return last_seen_dt.date() != get_moscow_time().date()
+
+
+async def set_last_seen(user_id: int):
+    try:
+        r = await get_redis_client()
+        await r.set(_last_seen_key(user_id), str(time.time()))
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def get_last_order_snapshot(user_id: int) -> Optional[dict]:
+    try:
+        r = await get_redis_client()
+        raw = await r.get(_last_order_key(user_id))
+        await r.aclose()
+        if not raw:
+            return None
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def set_last_order_snapshot(user_id: int, snapshot: dict):
+    try:
+        r = await get_redis_client()
+        # ensure_ascii=False чтобы emoji/кириллица были читаемы в JSON строке. [web:273][web:271]
+        await r.set(_last_order_key(user_id), json.dumps(snapshot, ensure_ascii=False))
+        await r.aclose()
     except Exception:
         pass
 
@@ -343,8 +399,6 @@ BTN_CHECKOUT = "✅ Оформить"
 BTN_CLEAR_CART = "🧹 Очистить"
 BTN_CANCEL_ORDER = "❌ Отменить заказ"
 BTN_EDIT_CART = "✏️ Изменить"
-
-BTN_HISTORY = "🧾 Моя история"
 
 BTN_CANCEL = "🔙 Отмена"
 BTN_BACK = "⬅️ Назад"
@@ -368,15 +422,14 @@ def create_main_keyboard() -> ReplyKeyboardMarkup:
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
-    kb.append([KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_STATS)])
-    kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
-    # persistent — чтобы клавиатура не пропадала на iOS. [web:60]
+    kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
+    kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
 def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
     kb: list[list[KeyboardButton]] = []
-    kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_HISTORY)])
+    kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT)])
     if cart_has_items:
         kb.append([KeyboardButton(text=BTN_EDIT_CART), KeyboardButton(text=BTN_CLEAR_CART), KeyboardButton(text=BTN_CANCEL_ORDER)])
     else:
@@ -495,44 +548,81 @@ FINISH_VARIANTS = [
 ]
 
 
-# ---------------- History handlers ----------------
-@router.message(Command("history"))
-async def history_cmd(message: Message):
-    await sync_menu_from_redis()
-    user_id = message.from_user.id
-    items = await history_get(user_id, limit=20)
-    if not items:
-        await message.answer("🧾 История пустая (пока).", reply_markup=create_main_keyboard())
-        return
-    text = "🧾 <b>Ваша история (последние 20):</b>\n\n" + "\n\n".join(items)
-    await message.answer(text, reply_markup=create_main_keyboard())
-
-
-@router.message(F.text == BTN_HISTORY)
-async def history_btn(message: Message):
-    await history_cmd(message)
-
-
 # ---------------- /start ----------------
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await sync_menu_from_redis()
 
+    user_id = message.from_user.id
     name = html.quote(get_user_name(message))
     welcome = random.choice(WELCOME_VARIANTS).format(name=name)
+
+    offer_repeat = await should_offer_repeat(user_id)
+    await set_last_seen(user_id)
 
     if not is_cafe_open():
         await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
         return
 
-    await history_add(message.from_user.id, f"▶️ {get_moscow_time().strftime('%d.%m %H:%M')} — /start")
+    if offer_repeat:
+        snap = await get_last_order_snapshot(user_id)
+        if snap and isinstance(snap.get("cart"), dict) and snap.get("cart"):
+            cart_preview = snap["cart"]
+            lines = []
+            for d, q in cart_preview.items():
+                lines.append(f"• {html.quote(str(d))} × {int(q)}")
+            await state.update_data(repeat_offer_snapshot=snap)
+
+            await message.answer(
+                f"{welcome}\n\n"
+                "Вы давно не заходили. Повторить последний заказ?\n\n"
+                + "\n".join(lines),
+                reply_markup=create_repeat_offer_keyboard(),
+            )
+            return
+
     await message.answer(
         f"{welcome}\n\n🏪 {get_work_status()}{_address_line()}\n\n"
         "Чтобы добавить в корзину: нажмите напиток → выберите количество.\n"
-        "История — «🧾 Моя история».",
+        "Корзина — «🛒 Корзина».",
         reply_markup=create_main_keyboard(),
     )
+
+
+@router.message(F.text == BTN_REPEAT_NO)
+async def repeat_no(message: Message, state: FSMContext):
+    await state.update_data(repeat_offer_snapshot=None)
+    await message.answer("Ок.", reply_markup=create_main_keyboard())
+
+
+@router.message(F.text == BTN_REPEAT_LAST)
+async def repeat_last(message: Message, state: FSMContext):
+    data = await state.get_data()
+    snap = data.get("repeat_offer_snapshot")
+    if not snap:
+        # fallback: попробуем с Redis
+        snap = await get_last_order_snapshot(message.from_user.id)
+
+    if not snap or not isinstance(snap.get("cart"), dict) or not snap.get("cart"):
+        await message.answer("Не нашёл последний заказ.", reply_markup=create_main_keyboard())
+        return
+
+    cart = {}
+    for k, v in snap["cart"].items():
+        try:
+            cart[str(k)] = int(v)
+        except Exception:
+            continue
+
+    # отфильтруем позиции, которых уже нет в меню
+    filtered = {d: q for d, q in cart.items() if d in MENU and q > 0}
+    if not filtered:
+        await message.answer("Позиции из прошлого заказа сейчас отсутствуют в меню.", reply_markup=create_main_keyboard())
+        return
+
+    await state.update_data(cart=filtered)
+    await _show_cart(message, state)
 
 
 # ---------------- Info buttons ----------------
@@ -596,7 +686,6 @@ async def clear_cart(message: Message, state: FSMContext):
 
 @router.message(F.text == BTN_CANCEL_ORDER)
 async def cancel_order(message: Message, state: FSMContext):
-    await history_add(message.from_user.id, f"❌ {get_moscow_time().strftime('%d.%m %H:%M')} — отмена заказа")
     await state.clear()
     await message.answer("❌ Заказ отменён.", reply_markup=create_main_keyboard())
 
@@ -604,8 +693,7 @@ async def cancel_order(message: Message, state: FSMContext):
 # ---------------- Cart edit ----------------
 @router.message(F.text == BTN_EDIT_CART)
 async def edit_cart(message: Message, state: FSMContext):
-    data = await state.get_data()
-    cart = _get_cart(data)
+    cart = _get_cart(await state.get_data())
     if not cart:
         await message.answer("Корзина пустая.", reply_markup=create_main_keyboard())
         return
@@ -676,8 +764,6 @@ async def _start_add_item(message: Message, state: FSMContext, drink: str):
     await state.set_state(OrderStates.waiting_for_quantity)
     await state.update_data(current_drink=drink, cart=cart)
 
-    await history_add(message.from_user.id, f"➕ {get_moscow_time().strftime('%d.%m %H:%M')} — выбрал: {drink}")
-
     choice_text = random.choice(CHOICE_VARIANTS)
     await message.answer(
         f"{choice_text}\n\n🥤 <b>{html.quote(drink)}</b>\n💰 <b>{price}₽</b>\n\nСколько добавить?",
@@ -713,8 +799,6 @@ async def process_quantity(message: Message, state: FSMContext):
     await state.update_data(cart=cart)
     await state.set_state(OrderStates.cart_view)
 
-    await history_add(message.from_user.id, f"🛒 {get_moscow_time().strftime('%d.%m %H:%M')} — в корзину: {drink} × {qty}")
-
     await message.answer(
         f"✅ Добавил в корзину: <b>{html.quote(drink)}</b> × {qty}\n\n{_cart_text(cart)}",
         reply_markup=create_cart_keyboard(True),
@@ -740,7 +824,6 @@ async def checkout(message: Message, state: FSMContext):
 @router.message(StateFilter(OrderStates.waiting_for_confirmation))
 async def confirm_order(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL_ORDER:
-        await history_add(message.from_user.id, f"❌ {get_moscow_time().strftime('%d.%m %H:%M')} — отмена на подтверждении")
         await state.clear()
         await message.answer("❌ Отменено.", reply_markup=create_main_keyboard())
         return
@@ -784,6 +867,9 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     ready_at_str = (get_moscow_time() + timedelta(minutes=max(0, ready_in_min))).strftime("%H:%M")
     ready_line = "как можно скорее" if ready_in_min <= 0 else f"через {ready_in_min} мин (к {ready_at_str} МСК)"
 
+    # save "last order snapshot" for repeat offer
+    await set_last_order_snapshot(user_id, {"cart": cart, "total": total, "ts": int(time.time())})
+
     # stats (общие)
     try:
         r = await get_redis_client()
@@ -798,13 +884,6 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     except Exception:
         pass
 
-    # per-user history
-    await history_add(
-        user_id,
-        f"✅ {get_moscow_time().strftime('%d.%m %H:%M')} — заказ #{order_num}: {total}₽, готовность: {ready_line}",
-    )
-
-    # admin notify ONLY
     admin_msg = (
         f"🔔 <b>НОВЫЙ ЗАКАЗ #{order_num}</b> | {html.quote(CAFE_NAME)}\n\n"
         f"<a href=\"tg://user?id={user_id}\">{html.quote(message.from_user.username or message.from_user.first_name or 'Клиент')}</a>\n"
@@ -839,7 +918,7 @@ async def ready_time(message: Message, state: FSMContext):
     await message.answer("Выберите кнопкой.", reply_markup=create_ready_time_keyboard())
 
 
-# ---------------- Booking (also per-user history) ----------------
+# ---------------- Booking ----------------
 @router.message(F.text == BTN_BOOKING)
 async def booking_start(message: Message, state: FSMContext):
     await state.clear()
@@ -913,8 +992,6 @@ async def booking_finish(message: Message, state: FSMContext):
     booking_id = str(int(time.time()))[-6:]
 
     user_id = message.from_user.id
-    await history_add(user_id, f"📅 {get_moscow_time().strftime('%d.%m %H:%M')} — бронь #{booking_id}: {dt_str}, {people} чел., {comment}")
-
     await message.answer("✅ Заявка на бронь принята!", reply_markup=create_main_keyboard())
 
     admin_msg = (
@@ -1099,13 +1176,10 @@ async def any_text(message: Message, state: FSMContext):
             return
         await _start_add_item(message, state, text)
         return
-    await message.answer("Нажмите напиток или «🧾 Моя история».", reply_markup=create_main_keyboard())
+    await message.answer("Нажмите напиток или «🛒 Корзина».", reply_markup=create_main_keyboard())
 
 
-# ---------------- Startup/Webhook ----------------
-_smart_task: Optional[asyncio.Task] = None
-
-
+# ---------------- Smart return loop ----------------
 def _promo_code(user_id: int) -> str:
     return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
 
@@ -1166,7 +1240,6 @@ async def customer_mark_order(*, user_id: int, first_name: str, username: str, c
 
 
 async def smart_return_check_and_send(bot: Bot):
-    # Важно: это отправляет каждому пользователю персонально, не всем сразу. [web:112]
     if not _in_send_window_msk():
         return
     now_ts = int(time.time())
@@ -1216,15 +1289,14 @@ async def smart_return_check_and_send(bot: Bot):
             f"{html.quote(str(first_name))}, давно не виделись ☕\n\n"
             f"Ваш любимый <b>{html.quote(str(favorite))}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
             f"Промокод: <code>{promo}</code>\n\n"
-            "Сделаем заказ? Нажмите /start.\n"
-            "Отключить предложения: /offers_off"
+            "Сделаем заказ? Нажмите /start."
         )
 
         try:
-            await bot.send_message(user_id, text)  # в личный чат user_id [web:112]
+            await bot.send_message(user_id, text)
             try:
                 r = await get_redis_client()
-                await r.hset(customer_key, "last_trigger_ts", now_ts)
+                await r.hset(customer_key, "last_trigger_ts", str(now_ts))
                 await r.aclose()
             except Exception:
                 pass
@@ -1244,6 +1316,10 @@ async def smart_return_loop(bot: Bot):
         except Exception as e:
             logger.error(f"smart_return_loop: {e}")
         await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
+
+
+# ---------------- Startup/Webhook ----------------
+_smart_task: Optional[asyncio.Task] = None
 
 
 async def on_startup(bot: Bot) -> None:
