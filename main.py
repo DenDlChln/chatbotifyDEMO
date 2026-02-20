@@ -1521,7 +1521,7 @@ async def smart_return_loop(bot: Bot):
 
 
 # ---------------- ЮKassa: функции и HTTP-ручки ----------------
-async def create_payment(amount: str, description: str, tg_id: int) -> str:
+async def create_payment(amount: str, description: str, metadata: dict) -> str:
     if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY):
         raise web.HTTPInternalServerError(text="Yookassa credentials not set")
     url = "https://api.yookassa.ru/v3/payments"
@@ -1534,10 +1534,7 @@ async def create_payment(amount: str, description: str, tg_id: int) -> str:
             "return_url": RETURN_URL,
         },
         "description": description,
-        "metadata": {
-            "telegram_user_id": tg_id,
-            "product": "cafebotify_start",
-        },
+        "metadata": metadata,
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -1556,31 +1553,23 @@ async def create_payment(amount: str, description: str, tg_id: int) -> str:
 
 async def pay_handler(request: web.Request):
     tg_id = request.query.get("tg_id")
-    if not tg_id:
-        raise web.HTTPBadRequest(text="tg_id required")
-    try:
-        tg_id_int = int(tg_id)
-    except ValueError:
-        raise web.HTTPBadRequest(text="bad tg_id")
+
+    tg_id_int: Optional[int] = None
+    if tg_id is not None:
+        try:
+            tg_id_int = int(tg_id)
+        except ValueError:
+            tg_id_int = None
 
     amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
-    description = f"Подписка CafebotifySTART для Telegram ID {tg_id}"
-    confirmation_url = await create_payment(amount, description, tg_id_int)
+    description = "Подписка CafebotifySTART"
+
+    metadata = {"product": "cafebotify_start"}
+    if tg_id_int is not None:
+        metadata["telegram_user_id"] = tg_id_int
+
+    confirmation_url = await create_payment(amount, description, metadata)
     raise web.HTTPFound(confirmation_url)
-
-
-async def yookassa_webhook(request: web.Request):
-    data = await request.json()
-    event = data.get("event")
-    obj = data.get("object", {})
-
-    if event != "payment.succeeded":
-        return web.json_response({"status": "ignored"})
-
-    metadata = obj.get("metadata", {})
-    tg_id = metadata.get("telegram_user_id")
-    if not tg_id:
-        return web.json_response({"status": "no_tg_id"})
 
     # TODO: тут включаешь подписку tg_id в своей БД/Redis
     # пример: r.hset(f"user:{tg_id}", "cafebotify_paid", "1")
