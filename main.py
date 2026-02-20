@@ -1571,8 +1571,37 @@ async def pay_handler(request: web.Request):
     confirmation_url = await create_payment(amount, description, metadata)
     raise web.HTTPFound(confirmation_url)
 
-    # TODO: тут включаешь подписку tg_id в своей БД/Redis
-    # пример: r.hset(f"user:{tg_id}", "cafebotify_paid", "1")
+
+async def yookassa_webhook(request: web.Request):
+    data = await request.json()
+    event = data.get("event")
+    obj = data.get("object", {})
+
+    if event != "payment.succeeded":
+        return web.json_response({"status": "ignored"})
+
+    metadata = obj.get("metadata", {})
+    tg_id = metadata.get("telegram_user_id")
+    if not tg_id:
+        # платеж без tg_id (с сайта) — для бота ничего не делаем
+        return web.json_response({"status": "no_tg_id"})
+
+    try:
+        tg_id_int = int(tg_id)
+    except (TypeError, ValueError):
+        return web.json_response({"status": "bad_tg_id"})
+
+    # Активация подписки в Redis
+    try:
+        r = await get_redis_client()
+        await r.hset(f"user:{tg_id_int}", mapping={
+            "cafebotify_paid": "1",
+            "cafebotify_paid_at": str(int(time.time())),
+        })
+        await r.aclose()
+    except Exception as e:
+        logger.error(f"yookassa_webhook redis error: {e}")
+        return web.json_response({"status": "redis_error"})
 
     return web.json_response({"status": "ok"})
 
