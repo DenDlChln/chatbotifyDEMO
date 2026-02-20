@@ -20,6 +20,8 @@ from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+import uuid
+import httpx  # добавь в requirements.txt: httpx>=0.27.0,<1.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -144,12 +146,19 @@ PORT = int(os.getenv("PORT", 10000))
 WEBHOOK_PATH = f"/{WEBHOOK_SECRET}/webhook"
 WEBHOOK_URL = f"https://{HOSTNAME}{WEBHOOK_PATH}"
 
+# ЮKassa
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
+RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://your-domain.ru/pay/success")
+
+# URL лендинга /pay (для кнопки в боте и ссылок из Tilda)
+PAY_LANDING_URL = os.getenv("PAY_LANDING_URL", f"https://{HOSTNAME}/pay")
+
 router = Router()
 
 
 # ---------------- Redis ----------------
 async def get_redis_client():
-    # decode_responses=True => str вместо bytes (сравнение названий меню становится стабильнее)
     client = redis.from_url(REDIS_URL, decode_responses=True)
     await client.ping()
     return client
@@ -224,7 +233,6 @@ def get_user_name(message: Message) -> str:
 
 # ---------------- Admin notify ----------------
 async def send_admin_only(bot: Bot, text: str):
-    # отправка только в ADMIN_ID [web:112]
     try:
         await bot.send_message(ADMIN_ID, text, disable_web_page_preview=True)
     except Exception:
@@ -232,14 +240,11 @@ async def send_admin_only(bot: Bot, text: str):
 
 
 async def send_admin_demo_to_user(bot: Bot, user_id: int, admin_like_text: str):
-    """
-    DEMO: пользователю показываем пример "что видит админ", но только ему.
-    """
     if not DEMO_MODE:
         return
     demo_text = "ℹ️ <b>DEMO</b>: так это увидит админ:\n\n" + admin_like_text
     try:
-        await bot.send_message(user_id, demo_text, disable_web_page_preview=True)  # [web:112]
+        await bot.send_message(user_id, demo_text, disable_web_page_preview=True)
     except Exception:
         pass
 
@@ -417,16 +422,18 @@ MENU_EDIT_ADD = "➕ Добавить позицию"
 MENU_EDIT_EDIT = "✏️ Изменить цену"
 MENU_EDIT_DEL = "🗑 Удалить позицию"
 
+# кнопка оплаты
+BTN_PAY = "💳 Оплатить CafebotifySTART"
+
 
 # ---------------- Keyboards ----------------
 def create_main_keyboard() -> ReplyKeyboardMarkup:
-    # is_persistent=True — чтобы клавиатура не “пряталась” на iOS. [web:60]
     kb: list[list[KeyboardButton]] = []
     for drink in MENU.keys():
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_CART), KeyboardButton(text=BTN_CHECKOUT), KeyboardButton(text=BTN_BOOKING)])
     kb.append([KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS)])
-    kb.append([KeyboardButton(text=BTN_MENU_EDIT)])
+    kb.append([KeyboardButton(text=BTN_MENU_EDIT), KeyboardButton(text=BTN_PAY)])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
@@ -441,6 +448,7 @@ def create_cart_keyboard(cart_has_items: bool) -> ReplyKeyboardMarkup:
         kb.append([KeyboardButton(text=drink)])
     kb.append([KeyboardButton(text=BTN_BOOKING), KeyboardButton(text=BTN_STATS)])
     kb.append([KeyboardButton(text=BTN_CALL), KeyboardButton(text=BTN_HOURS), KeyboardButton(text=BTN_MENU_EDIT)])
+    kb.append([KeyboardButton(text=BTN_PAY)])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 
@@ -648,6 +656,22 @@ async def repeat_last(message: Message, state: FSMContext):
 
     await state.update_data(cart=filtered)
     await _show_cart(message, state)
+
+
+# ---------------- Pay button ----------------
+@router.message(F.text == BTN_PAY)
+async def pay_button(message: Message):
+    user_id = message.from_user.id
+    pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}"
+    text = (
+        "💳 <b>Оплата доступа к CafebotifySTART</b>\n\n"
+        "Нажмите на ссылку ниже, чтобы перейти на страницу оплаты.\n"
+        "После успешной оплаты доступ будет активирован автоматически."
+    )
+    await message.answer(
+        f"{text}\n\n<a href=\"{html.quote(pay_url)}\">Перейти к оплате</a>",
+        reply_markup=create_main_keyboard(),
+    )
 
 
 # ---------------- Info buttons ----------------
@@ -1358,6 +1382,213 @@ async def smart_return_loop(bot: Bot):
 
 
 # ---------------- Startup/Webhook ----------------
+def _promo_code(user_id: int) -> str:
+    return f"CB{user_id % 10000:04d}{int(time.time()) % 10000:04d}"
+
+
+def _in_send_window_msk() -> bool:
+    h = get_moscow_time().hour
+    return RETURN_SEND_FROM_HOUR <= h < RETURN_SEND_TO_HOUR
+
+
+async def _get_favorite_drink(user_id: int) -> str:
+    key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
+    try:
+        r = await get_redis_client()
+        data = await r.hgetall(key)
+        await r.aclose()
+        best_name, best_cnt = "", -1
+        for k, v in data.items():
+            try:
+                cnt = int(v)
+                if cnt > best_cnt:
+                    best_cnt = cnt
+                    best_name = str(k)
+            except Exception:
+                continue
+        return best_name
+    except Exception:
+        return ""
+
+
+async def customer_mark_order(*, user_id: int, first_name: str, username: str, cart: Dict[str, int], total_sum: int):
+    now_ts = int(time.time())
+    customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+    drinks_key = f"{CUSTOMER_DRINKS_PREFIX}{user_id}"
+    last_drink = next(iter(cart.keys()), "")
+
+    try:
+        r = await get_redis_client()
+        pipe = r.pipeline()
+        pipe.sadd(CUSTOMERS_SET_KEY, user_id)
+        pipe.hsetnx(customer_key, "first_order_ts", now_ts)
+        pipe.hsetnx(customer_key, "offers_opt_out", 0)
+        pipe.hsetnx(customer_key, "last_trigger_ts", 0)
+        pipe.hset(customer_key, mapping={
+            "first_name": first_name or "",
+            "username": username or "",
+            "last_order_ts": now_ts,
+            "last_order_sum": int(total_sum),
+            "last_drink": last_drink,
+        })
+        pipe.hincrby(customer_key, "total_orders", 1)
+        pipe.hincrby(customer_key, "total_spent", int(total_sum))
+        for drink, qty in cart.items():
+            pipe.hincrby(drinks_key, drink, int(qty))
+        await pipe.execute()
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def smart_return_check_and_send(bot: Bot):
+    if not _in_send_window_msk():
+        return
+    now_ts = int(time.time())
+
+    try:
+        r = await get_redis_client()
+        ids = await r.smembers(CUSTOMERS_SET_KEY)
+        await r.aclose()
+        ids = [int(x) for x in ids]
+    except Exception:
+        ids = []
+
+    for user_id in ids:
+        customer_key = f"{CUSTOMER_KEY_PREFIX}{user_id}"
+        try:
+            r = await get_redis_client()
+            profile = await r.hgetall(customer_key)
+            await r.aclose()
+        except Exception:
+            profile = {}
+
+        if not profile or str(profile.get("offers_opt_out", "0")) == "1":
+            continue
+
+        try:
+            last_order_ts = int(float(profile.get("last_order_ts", "0") or 0))
+        except Exception:
+            continue
+
+        days_since = (now_ts - last_order_ts) // 86400
+        if days_since < RETURN_CYCLE_DAYS:
+            continue
+
+        try:
+            last_trigger_ts = int(float(profile.get("last_trigger_ts", "0") or 0))
+        except Exception:
+            last_trigger_ts = 0
+
+        if last_trigger_ts and (now_ts - last_trigger_ts) < (RETURN_COOLDOWN_DAYS * 86400):
+            continue
+
+        first_name = profile.get("first_name") or "друг"
+        favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or "напиток"
+        promo = _promo_code(user_id)
+
+        text = (
+            f"{html.quote(str(first_name))}, давно не виделись ☕\n\n"
+            f"Ваш любимый <b>{html.quote(str(favorite))}</b> сегодня со скидкой <b>{RETURN_DISCOUNT_PERCENT}%</b>.\n"
+            f"Промокод: <code>{promo}</code>\n\n"
+            "Сделаем заказ? Нажмите /start."
+        )
+
+        try:
+            await bot.send_message(user_id, text)
+            try:
+                r = await get_redis_client()
+                await r.hset(customer_key, "last_trigger_ts", str(now_ts))
+                await r.aclose()
+            except Exception:
+                pass
+        except Exception:
+            try:
+                r = await get_redis_client()
+                await r.srem(CUSTOMERS_SET_KEY, user_id)
+                await r.aclose()
+            except Exception:
+                pass
+
+
+async def smart_return_loop(bot: Bot):
+    while True:
+        try:
+            await smart_return_check_and_send(bot)
+        except Exception as e:
+            logger.error(f"smart_return_loop: {e}")
+        await asyncio.sleep(RETURN_CHECK_EVERY_SECONDS)
+
+
+# ---------------- ЮKassa: функции и HTTP-ручки ----------------
+async def create_payment(amount: str, description: str, tg_id: int) -> str:
+    if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY):
+        raise web.HTTPInternalServerError(text="Yookassa credentials not set")
+    url = "https://api.yookassa.ru/v3/payments"
+    idem_key = str(uuid.uuid4())
+    payload = {
+        "amount": {"value": amount, "currency": "RUB"},
+        "capture": True,
+        "confirmation": {
+            "type": "redirect",
+            "return_url": RETURN_URL,
+        },
+        "description": description,
+        "metadata": {
+            "telegram_user_id": tg_id,
+            "product": "cafebotify_start",
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+            headers={"Idempotence-Key": idem_key},
+            timeout=10,
+        )
+    if resp.status_code not in (200, 201):
+        logger.error(f"Yookassa error: {resp.status_code} {resp.text}")
+        raise web.HTTPInternalServerError(text="Yookassa error")
+    data = resp.json()
+    return data["confirmation"]["confirmation_url"]
+
+
+async def pay_handler(request: web.Request):
+    tg_id = request.query.get("tg_id")
+    if not tg_id:
+        raise web.HTTPBadRequest(text="tg_id required")
+    try:
+        tg_id_int = int(tg_id)
+    except ValueError:
+        raise web.HTTPBadRequest(text="bad tg_id")
+
+    amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
+    description = f"Подписка CafebotifySTART для Telegram ID {tg_id}"
+    confirmation_url = await create_payment(amount, description, tg_id_int)
+    raise web.HTTPFound(confirmation_url)
+
+
+async def yookassa_webhook(request: web.Request):
+    data = await request.json()
+    event = data.get("event")
+    obj = data.get("object", {})
+
+    if event != "payment.succeeded":
+        return web.json_response({"status": "ignored"})
+
+    metadata = obj.get("metadata", {})
+    tg_id = metadata.get("telegram_user_id")
+    if not tg_id:
+        return web.json_response({"status": "no_tg_id"})
+
+    # TODO: тут включаешь подписку tg_id в своей БД/Redis
+    # пример: r.hset(f"user:{tg_id}", "cafebotify_paid", "1")
+
+    return web.json_response({"status": "ok"})
+
+
+# ---------------- Startup/Webhook ----------------
 _smart_task: Optional[asyncio.Task] = None
 
 
@@ -1393,6 +1624,8 @@ async def main():
         return web.json_response({"status": "healthy"})
 
     app.router.add_get("/", healthcheck)
+    app.router.add_get("/pay", pay_handler)
+    app.router.add_post("/yookassa/webhook", yookassa_webhook)
 
     SimpleRequestHandler(
         dispatcher=dp,
