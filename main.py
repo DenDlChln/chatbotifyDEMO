@@ -1482,7 +1482,7 @@ async def subs_loop(bot: Bot):
 
 # ---------------- ЮKassa HTTP ----------------
 async def create_payment(amount: str, description: str, metadata: dict) -> str:
-    if not YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
         raise web.HTTPInternalServerError(text="Yookassa credentials not set")
 
     url = "https://api.yookassa.ru/v3/payments"
@@ -1513,7 +1513,7 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
         return confirmation
 
 
-async def pay_handler(request: web.Request):
+async def pay_month_handler(request: web.Request):
     tgid = request.query.get("tg_id") or request.query.get("tgid")
     tgid_int: Optional[int] = None
     if tgid is not None:
@@ -1522,15 +1522,30 @@ async def pay_handler(request: web.Request):
         except ValueError:
             tgid_int = None
 
-    plan = request.query.get("plan", "month")
-    if plan == "year":
-        amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "4900.00")
-        product = "cafebotify_start_year"
-    else:
-        amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
-        product = "cafebotify_start_month"
+    amount = os.getenv("CAFEBOTIFY_PRICE", "490.00")
+    product = "cafebotify_start_month"
+    description = "CafebotifySTART 30 дней"
 
-    description = "CafebotifySTART"
+    metadata = {"product": product}
+    if tgid_int is not None:
+        metadata["telegram_user_id"] = tgid_int
+
+    confirmation_url = await create_payment(amount, description, metadata)
+    raise web.HTTPFound(confirmation_url)
+
+
+async def pay_year_handler(request: web.Request):
+    tgid = request.query.get("tg_id") or request.query.get("tgid")
+    tgid_int: Optional[int] = None
+    if tgid is not None:
+        try:
+            tgid_int = int(tgid)
+        except ValueError:
+            tgid_int = None
+
+    amount = os.getenv("CAFEBOTIFY_PRICE_YEAR", "4900.00")
+    product = "cafebotify_start_year"
+    description = "CafebotifySTART 360 дней"
 
     metadata = {"product": product}
     if tgid_int is not None:
@@ -1793,7 +1808,8 @@ async def main():
 
     app.router.add_get("/", healthcheck)
     app.router.add_get("/healthcheck", healthcheck)
-    app.router.add_get("/pay", pay_handler)
+    app.router.add_get("/pay-month", pay_month_handler)
+    app.router.add_get("/pay-year", pay_year_handler)
     app.router.add_post("/yookassa/webhook", yookassa_webhook)
 
     SimpleRequestHandler(
