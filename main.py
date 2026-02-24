@@ -1754,6 +1754,31 @@ async def set_profile_cmd(message: Message):
             "✅ Профиль обновлён:\n" + ("\n".join(changes) if changes else "Изменений нет.")
         )
 
+@router.message(Command("checkpaid"))
+async def check_paid_cmd(message: Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+
+    try:
+        r = await get_redis_client()
+        key = f"user:{message.from_user.id}"
+        data = await r.hgetall(key)
+        await r.aclose()
+    except Exception as e:
+        await message.answer(f"Redis error: {e}")
+        return
+
+    if not data:
+        await message.answer(f"В Redis нет ключа {key}")
+        return
+
+    paid = data.get("cafebotify_paid")
+    valid_until = data.get("cafebotify_valid_until")
+    await message.answer(
+        "Redis:\n"
+        f"cafebotify_paid = {paid}\n"
+        f"cafebotify_valid_until = {valid_until}"
+    )
 
 
 @router.message(Command("set_paid"))
