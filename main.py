@@ -32,6 +32,10 @@ RATE_LIMIT_SECONDS = 60
 # --- DEMO mode ---
 DEMO_MODE = True  # в клиентской версии можно будет выключить
 
+# --- paths / persistence ---
+DATA_DIR = os.getenv("DATA_DIR", "/data")
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+
 # --- Redis keys ---
 MENU_REDIS_KEY = "menu:items"  # hash: {drink_name: price}
 
@@ -94,8 +98,14 @@ def load_config() -> Dict[str, Any]:
         "return_cycle_days": DEFAULT_RETURN_CYCLE_DAYS,
     }
 
+    # гарантируем, что /data существует
     try:
-        with open("config.json", "r", encoding="utf-8") as f:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
             cafe = data.get("cafe", {})
 
@@ -147,7 +157,7 @@ SUPERADMIN_ID = ADMIN_ID
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
-HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "chatbotify-2tjd.onrender.com")
+HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "demo-cafebotify-denvyd.amvera.io")
 PORT = int(os.getenv("PORT", 10000))
 
 WEBHOOK_PATH = f"/{WEBHOOK_SECRET}/webhook"
@@ -156,10 +166,11 @@ WEBHOOK_URL = f"https://{HOSTNAME}{WEBHOOK_PATH}"
 # ЮKassa
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
-RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://your-domain.ru/pay/success")
+RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://cafebotify.tilda.ws/pay-success")
 
-# URL лендинга /pay (для кнопки в боте и ссылок из Tilda)
-PAY_LANDING_URL = os.getenv("PAY_LANDING_URL", f"https://{HOSTNAME}/pay")
+# URL лендингов Tilda (30 и 360 дней)
+PAY_LANDING_MONTH = os.getenv("PAY_LANDING_MONTH", "https://cafebotify.tilda.ws/pay-30")
+PAY_LANDING_YEAR = os.getenv("PAY_LANDING_YEAR", "https://cafebotify.tilda.ws/pay-360")
 
 router = Router()
 
@@ -1669,9 +1680,9 @@ async def set_profile_cmd(message: Message):
         except Exception:
             pass
 
-    # сохранить в config.json, чтобы переживало рестарт
+    # сохранить профиль в CONFIG_PATH (/data/config.json), чтобы переживало рестарт
     try:
-        with open("config.json", "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         data = {}
@@ -1685,14 +1696,18 @@ async def set_profile_cmd(message: Message):
     data["cafe"] = cafe
 
     try:
-        with open("config.json", "w", encoding="utf-8") as f:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        await message.answer(f"⚠️ Профиль обновлён в памяти, но не удалось сохранить config.json: {e}")
+        await message.answer(
+            f"⚠️ Профиль обновлён в памяти, но не удалось сохранить config.json: {e}"
+        )
     else:
         await message.answer(
             "✅ Профиль обновлён:\n" + ("\n".join(changes) if changes else "Изменений нет.")
         )
+
 
 
 @router.message(Command("set_paid"))
