@@ -451,7 +451,8 @@ MENU_EDIT_EDIT = "✏️ Изменить цену"
 MENU_EDIT_DEL = "🗑 Удалить позицию"
 
 # кнопка оплаты
-BTN_PAY = "💳 Оплатить CafebotifySTART"
+BTN_PAY_MONTH = "💳 Оплатить 30 дней"
+BTN_PAY_YEAR = "💳 Оплатить 360 дней"
 
 
 # ---------------- Keyboards ----------------
@@ -699,21 +700,40 @@ async def repeat_last(message: Message, state: FSMContext):
     await _show_cart(message, state)
 
 
-# ---------------- Pay button ----------------
-@router.message(F.text == BTN_PAY)
-async def pay_button(message: Message):
+# ---------------- Pay buttons ----------------
+@router.message(F.text == BTN_PAY_MONTH)
+async def pay_month_button(message: Message):
     user_id = message.from_user.id
-    # по умолчанию считаем месячный план
-    pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan=month"
+    url = f"{PAY_LANDING_MONTH}?tg_id={user_id}"
     text = (
-        "💳 <b>Оплата доступа к CafebotifySTART</b>\n\n"
-        "Нажмите на ссылку ниже, чтобы перейти на страницу оплаты.\n"
+        "💳 <b>Оплата доступа на 30 дней</b>\n\n"
+        "1) Откройте страницу оплаты.\n"
+        "2) Заполните форму (данные кафе + ваш Telegram ID).\n"
+        "3) Оплатите на странице ЮKassa.\n\n"
         "После успешной оплаты доступ будет активирован автоматически."
     )
     await message.answer(
-        f"{text}\n\n<a href=\"{html.quote(pay_url)}\">Перейти к оплате</a>",
+        f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 30 дней</a>",
         reply_markup=create_main_keyboard(),
     )
+
+
+@router.message(F.text == BTN_PAY_YEAR)
+async def pay_year_button(message: Message):
+    user_id = message.from_user.id
+    url = f"{PAY_LANDING_YEAR}?tg_id={user_id}"
+    text = (
+        "💳 <b>Оплата доступа на 360 дней</b>\n\n"
+        "1) Откройте страницу оплаты.\n"
+        "2) Заполните форму.\n"
+        "3) Оплатите на странице ЮKassa.\n\n"
+        "После успешной оплаты доступ будет активирован автоматически."
+    )
+    await message.answer(
+        f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 360 дней</a>",
+        reply_markup=create_main_keyboard(),
+    )
+
 
 
 # ---------------- Info buttons ----------------
