@@ -736,7 +736,6 @@ async def pay_year_button(message: Message):
     )
 
 
-
 # ---------------- Info buttons ----------------
 @router.message(F.text == BTN_CALL)
 async def call_phone(message: Message):
@@ -1587,79 +1586,92 @@ async def pay_year_handler(request: web.Request):
     raise web.HTTPFound(confirmation_url)
 
 
-async def yookassa_webhook(request: web.Request):
-    data = await request.json()
-    event = data.get("event")
-    obj = data.get("object", {})
-    if event != "payment.succeeded":
-        return web.json_response({"status": "ignored"})
-
-    metadata = obj.get("metadata", {})
-    tgid = metadata.get("telegram_user_id")
-
-    # логируем, что пришло от ЮKassa
-    logger.info(f"Yookassa webhook: raw_tgid={tgid}, metadata={metadata}")
-
-    if not tgid:
-        return web.json_response({"status": "notgid"})
-
-
-    try:
-        tgid_int = int(tgid)
-    except (TypeError, ValueError):
-        return web.json_response({"status": "badtgid"})
-
-    now_ts = int(time.time())
-    product = metadata.get("product") or "cafebotify_start_month"
-    if product == "cafebotify_start_year":
-        period_days = 360
-    else:
-        period_days = 30
-
-    valid_until = now_ts + period_days * 86400
-
-    try:
-        r = await get_redis_client()
-        await r.hset(
-            f"user:{tgid_int}",
-            mapping={
-                "cafebotify_paid": "1",
-                "cafebotify_paid_at": str(now_ts),
-                "cafebotify_valid_until": str(valid_until),
-                "cafebotify_product": product,
-            },
-        )
-        await r.aclose()
-    except Exception as e:
-        logger.error(f"yookassa_webhook redis error: {e}")
-        return web.json_response({"status": "rediserror"})
-
-        # уведомление администратору и пользователю
-    try:
-        bot: Bot = request.app["bot"]
-        valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
-        tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
-
-        # админу
-        await bot.send_message(
-            ADMIN_ID,
-            "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
-            f"Пользователь: <code>{tgid_int}</code>\n"
-            f"Тариф: <b>{tariff_title}</b>\n"
-            f"Подписка до: <b>{valid_until_dt}</b>",
-        )
-
-        # пользователю
-        await bot.send_message(
-            tgid_int,
-            "✅ Оплата получена. Доступ к CafebotifySTART активирован.\n"
-            f"Срок действия до: <b>{valid_until_dt}</b>.",
-        )
-    except Exception as e:
-        logger.error(f"yookassa_webhook notify error: {e}")
-
-    return web.json_response({"status": "ok"})
-
+ async def yookassa_webhook(request: web.Request):
+     data = await request.json()
+     event = data.get("event")
+     obj = data.get("object", {})
+     if event != "payment.succeeded":
+         return web.json_response({"status": "ignored"})
+ 
+     metadata = obj.get("metadata", {})
+     tgid = metadata.get("telegram_user_id")
+ 
+-    # логируем, что пришло от ЮKassa
+-    logger.info(f"Yookassa webhook: raw_tgid={tgid}, metadata={metadata}")
++    # логируем, что пришло от ЮKassa
++    logger.info(f"Yookassa webhook: raw_tgid={tgid}, metadata={metadata}")
+ 
+     if not tgid:
+         return web.json_response({"status": "notgid"})
+ 
+     try:
+         tgid_int = int(tgid)
+     except (TypeError, ValueError):
+         return web.json_response({"status": "badtgid"})
+ 
+     now_ts = int(time.time())
+     product = metadata.get("product") or "cafebotify_start_month"
+     if product == "cafebotify_start_year":
+         period_days = 360
+     else:
+         period_days = 30
+ 
+     valid_until = now_ts + period_days * 86400
+ 
+     try:
+         r = await get_redis_client()
+         await r.hset(
+             f"user:{tgid_int}",
+             mapping={
+                 "cafebotify_paid": "1",
+                 "cafebotify_paid_at": str(now_ts),
+                 "cafebotify_valid_until": str(valid_until),
+                 "cafebotify_product": product,
+             },
+         )
+         await r.aclose()
+     except Exception as e:
+         logger.error(f"yookassa_webhook redis error: {e}")
+         return web.json_response({"status": "rediserror"})
+ 
+-    # уведомление (старый блок мог не отрабатывать из-за форматирования/отступов)
+-    try:
+-        bot: Bot = request.app["bot"]
+-        valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
+-        await bot.send_message(tgid_int, f"✅ Оплата получена. CafebotifySTART активирован до <b>{valid_until_dt}</b>.")
+-    except Exception as e:
+-        logger.error(f"yookassa_webhook notify error: {e}")
++    # FIX: уведомления гарантированно выполняются и уходят и админу, и юзеру, и в DEMO-режиме [file:1]
++    try:
++        bot: Bot = request.app["bot"]
++        valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y")
++        tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
++
++        admin_text = (
++            "💳 <b>Новая оплата CafebotifySTART</b>\n\n"
++            f"Пользователь: <code>{tgid_int}</code>\n"
++            f"Тариф: <b>{tariff_title}</b>\n"
++            f"Подписка до: <b>{valid_until_dt}</b>"
++        )
++
++        user_text = (
++            "✅ Оплата получена. Доступ к CafebotifySTART активирован.\n"
++            f"Срок действия до: <b>{valid_until_dt}</b>."
++        )
++
++        # админу
++        await bot.send_message(ADMIN_ID, admin_text)
++
++        # пользователю
++        await bot.send_message(tgid_int, user_text)
++
++        # DEMO: показать пользователю "как это увидит админ"
++        await send_admin_demo_to_user(bot, tgid_int, admin_text)
++
++    except Exception as e:
++        logger.error(f"yookassa_webhook notify error: {e}")
+ 
+     return web.json_response({"status": "ok"})
 
 
 # ---------------- Команды суперадмина: профиль и оплата ----------------
@@ -1758,6 +1770,7 @@ async def set_profile_cmd(message: Message):
         await message.answer(
             "✅ Профиль обновлён:\n" + ("\n".join(changes) if changes else "Изменений нет.")
         )
+
 
 @router.message(Command("checkpaid"))
 async def check_paid_cmd(message: Message):
@@ -1894,7 +1907,7 @@ async def main():
 
     app = web.Application()
     app["bot"] = bot
-    
+
     async def healthcheck(request: web.Request):
         return web.json_response({"status": "healthy"})
 
