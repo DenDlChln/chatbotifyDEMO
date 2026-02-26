@@ -1623,10 +1623,22 @@ async def yookassa_webhook(request: web.Request):
     else:
         period_days = 30
 
-    valid_until = now_ts + period_days * 86400
+        now_ts = int(time.time())
+    product = metadata.get("product") or "cafebotify_start_month"
+    period_days = 360 if product == "cafebotify_start_year" else 30
+    add_seconds = period_days * 86400
 
+    r = await get_redis_client()
     try:
-        r = await get_redis_client()
+        cur_s = await r.hget(f"user:{tgid_int}", "cafebotify_valid_until")
+        try:
+            cur_until = int(cur_s) if cur_s else 0
+        except Exception:
+            cur_until = 0
+
+        base = cur_until if cur_until > now_ts else now_ts
+        valid_until = base + add_seconds
+
         await r.hset(
             f"user:{tgid_int}",
             mapping={
@@ -1636,10 +1648,8 @@ async def yookassa_webhook(request: web.Request):
                 "cafebotify_product": product,
             },
         )
+    finally:
         await r.aclose()
-    except Exception as e:
-        logger.error(f"yookassa_webhook redis error: {e}")
-        return web.json_response({"status": "rediserror"})
 
     # уведомления: админу + пользователю + DEMO (как увидит админ)
     try:
