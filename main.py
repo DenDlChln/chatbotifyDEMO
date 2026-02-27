@@ -1290,8 +1290,11 @@ async def booking_finish(message: Message, state: FSMContext):
         f"💬 Комментарий: {html.quote(comment)}"
     )
 
-    await send_admin_only(message.bot, admin_msg)
+    if DEMO_MODE:
     await send_admin_demo_to_user(message.bot, user_id, admin_msg)
+else:
+    await send_admin_only(message.bot, admin_msg)
+
     await state.clear()
 
 
