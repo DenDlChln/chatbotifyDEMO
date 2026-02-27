@@ -1175,9 +1175,9 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     )
 
     if DEMO_MODE:
-    await send_admin_demo_to_user(message.bot, user_id, admin_msg)
-else:
-    await send_admin_only(message.bot, admin_msg)
+        await send_admin_demo_to_user(message.bot, user_id, admin_msg)
+    else:
+        await send_admin_only(message.bot, admin_msg)
 
     finish = random.choice(FINISH_VARIANTS).format(name=html.quote(get_user_name(message)))
     await message.answer(
@@ -1291,9 +1291,9 @@ async def booking_finish(message: Message, state: FSMContext):
     )
 
     if DEMO_MODE:
-    await send_admin_demo_to_user(message.bot, user_id, admin_msg)
-else:
-    await send_admin_only(message.bot, admin_msg)
+        await send_admin_demo_to_user(message.bot, user_id, admin_msg)
+    else:
+        await send_admin_only(message.bot, admin_msg)
 
     await state.clear()
 
