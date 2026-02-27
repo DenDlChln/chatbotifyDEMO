@@ -671,10 +671,25 @@ async def myid_cmd(message: Message):
     )
 
 
+@router.message(Command("botstart"))
+async def botstart_cmd(message: Message):
+    text = (
+        "<b>CafebotifySTART</b>\n\n"
+        "Коротко о преимуществах:\n"
+        "• Заказы через Telegram (корзина, подтверждение)\n"
+        "• Бронирование столика\n"
+        "• Статистика и управление меню\n"
+        "• Возврат клиентов (умные напоминания)\n\n"
+        f"🌐 Сайт: {SITE_URL}"
+    )
+    await message.answer(text, disable_web_page_preview=True, reply_markup=create_main_keyboard())
+
+
 @router.message(F.text == BTN_REPEAT_NO)
 async def repeat_no(message: Message, state: FSMContext):
     await state.update_data(repeat_offer_snapshot=None)
     await message.answer("Ок.", reply_markup=create_main_keyboard())
+
 
 
 @router.message(F.text == BTN_REPEAT_LAST)
