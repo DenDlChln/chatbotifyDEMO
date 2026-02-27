@@ -171,6 +171,7 @@ RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://cafebotify.tilda.ws/pay-s
 # URL лендингов Tilda (30 и 360 дней)
 PAY_LANDING_MONTH = os.getenv("PAY_LANDING_MONTH", "https://cafebotify.tilda.ws/pay-30")
 PAY_LANDING_YEAR = os.getenv("PAY_LANDING_YEAR", "https://cafebotify.tilda.ws/pay-360")
+SITE_URL = os.getenv("SITE_URL", "https://cafebotify.tilda.ws/")
 
 router = Router()
 
