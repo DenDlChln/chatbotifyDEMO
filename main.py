@@ -1787,14 +1787,16 @@ async def yookassa_webhook(request: web.Request):
             f"Срок действия до: <b>{valid_until_dt}</b>."
         )
 
-                # --- Доп. сообщение со ссылками (админ подтверждает отправку) ---
+                        # --- Доп. сообщение: черновик + подтверждение админом ---
+        cafe_code = DEFAULT_CAFE_CODE  # вручную меняешь только это значение в константе выше
+
         user_links_text = (
             "<b>Ссылки</b>\n"
             "• Клиентам: <a href=\"https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE</a>\n"
             "• Админу: <a href=\"https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE</a>\n"
             "• В staff-группу: <a href=\"https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE</a>\n\n"
             "В staff-группе выполните:\n"
-            "<code>/bind cafe_001</code>"
+            f"<code>/bind {cafe_code}</code>"
         )
 
         draft_id = uuid.uuid4().hex[:12]
@@ -1819,6 +1821,7 @@ async def yookassa_webhook(request: web.Request):
             f"Draft ID: <code>{draft_id}</code>\n\n"
             + user_links_text
         )
+
         await demo_bot.send_message(
             ADMIN_ID,
             preview,
