@@ -182,6 +182,30 @@ PAY_LANDING_MONTH = os.getenv("PAY_LANDING_MONTH", "https://cafebotify.tilda.ws/
 PAY_LANDING_YEAR = os.getenv("PAY_LANDING_YEAR", "https://cafebotify.tilda.ws/pay-360")
 SITE_URL = os.getenv("SITE_URL", "https://cafebotify.tilda.ws/")
 
+# --- dynamic cafe code / links ---
+BOT_PUBLIC_USERNAME = os.getenv("BOT_PUBLIC_USERNAME", "cafebotifySTARTBOT")
+DEFAULT_CAFE_CODE = os.getenv("DEFAULT_CAFE_CODE", "cafe_001")
+
+def _b64_nopad(s: str) -> str:
+    return base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii").rstrip("=")
+
+def build_links_text(cafe_code: str) -> str:
+    client = _b64_nopad(cafe_code)
+    admin = _b64_nopad(f"admin:{cafe_code}")
+    group = _b64_nopad(cafe_code)
+
+    return (
+        "<b>Ссылки</b>\n"
+        f"• Клиентам: <a href=\"https://t.me/{BOT_PUBLIC_USERNAME}?start={client}\">"
+        f"https://t.me/{BOT_PUBLIC_USERNAME}?start={client}</a>\n"
+        f"• Админу: <a href=\"https://t.me/{BOT_PUBLIC_USERNAME}?start={admin}\">"
+        f"https://t.me/{BOT_PUBLIC_USERNAME}?start={admin}</a>\n"
+        f"• В staff-группу: <a href=\"https://t.me/{BOT_PUBLIC_USERNAME}?startgroup={group}\">"
+        f"https://t.me/{BOT_PUBLIC_USERNAME}?startgroup={group}</a>\n\n"
+        "В staff-группе выполните:\n"
+        f"<code>/bind {cafe_code}</code>"
+    )
+
 router = Router()
 
 
