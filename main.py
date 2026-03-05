@@ -1026,36 +1026,53 @@ async def paydraft_send(cb: CallbackQuery):
     payload = json.loads(raw)
     if payload.get("status") != "pending":
         await r.aclose()
-        await cb.answer("Уже обработано", show_alert=True)
+        await cb.answer("Уже обработан", show_alert=True)
         return
 
-    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
-    if not client_token:
-        await r.aclose()
-        await cb.answer("CLIENT_BOT_TOKEN не задан", show_alert=True)
-        return
-
-    tgid = int(payload["tgid"])
+    tgid_int = int(payload["tgid"])
     text = str(payload["text"])
-
-    client_bot = Bot(token=client_token)
-    try:
-        await client_bot.send_message(tgid, text, parse_mode="HTML", disable_web_page_preview=True)
-    except Exception as e:
-        await cb.answer(f"Не отправлено: {e}", show_alert=True)
-        await r.aclose()
-        return
-    finally:
-        await client_bot.session.close()
 
     payload["status"] = "sent"
     payload["sent_at"] = int(time.time())
     await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
     await r.aclose()
 
+    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
+    if not client_token:
+        await cb.answer("CLIENT_BOT_TOKEN не задан", show_alert=True)
+        return
+
+    client_bot = Bot(token=client_token)
+    try:
+        await client_bot.send_message(tgid_int, text, parse_mode="HTML", disable_web_page_preview=True)
+    finally:
+        await client_bot.session.close()
+
+    await cb.answer("Отправлено")
     if cb.message:
         await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.answer("Отправлено")
+
+
+@router.callback_query(F.data.startswith("paydraft_cancel:"))
+async def paydraft_cancel(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    draft_id = (cb.data or "").split(":", 1)[1].strip()
+
+    r = await get_redis_client()
+    raw = await r.get(_pay_draft_key(draft_id))
+    if raw:
+        payload = json.loads(raw)
+        payload["status"] = "canceled"
+        payload["canceled_at"] = int(time.time())
+        await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+    await r.aclose()
+
+    await cb.answer("Ок, не отправляем")
+    if cb.message:
+        await cb.message.edit_reply_markup(reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("paydraft_cancel:"))
