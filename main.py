@@ -1010,45 +1010,46 @@ async def edit_cart(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("paydraft_send:"))
 async def paydraft_send(cb: CallbackQuery):
-    if cb.from_user.id != ADMINID:
+    if cb.from_user.id != ADMIN_ID:
         await cb.answer("Нет доступа", show_alert=True)
         return
 
     draft_id = (cb.data or "").split(":", 1)[1].strip()
 
-    r = await getredisclient()
-    raw = await r.get(_pay_draft_key(draft_id))
-    if not raw:
+    r = await get_redis_client()
+    try:
+        raw = await r.get(_pay_draft_key(draft_id))
+        if not raw:
+            await cb.answer("Черновик не найден", show_alert=True)
+            return
+
+        payload = json.loads(raw)
+        if payload.get("status") != "pending":
+            await cb.answer("Уже обработан", show_alert=True)
+            return
+
+        tgid_int = int(payload["tgid"])
+
+        cafe_code = DEFAULT_CAFE_CODE
+        user_links_text = (
+            "<b>Ссылки</b>\n"
+            "• Клиентам: <a href=\"https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE</a>\n"
+            "• Админу: <a href=\"https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE</a>\n"
+            "• В staff-группу: <a href=\"https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE</a>\n\n"
+            "В staff-группе выполните:\n"
+            f"<code>/bind {cafe_code}</code>"
+        )
+
+        payload["status"] = "sent"
+        payload["sent_at"] = int(time.time())
+        await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+
+    finally:
         await r.aclose()
-        await cb.answer("Черновик не найден", show_alert=True)
-        return
 
-    payload = json.loads(raw)
-    if payload.get("status") != "pending":
-        await r.aclose()
-        await cb.answer("Уже обработан", show_alert=True)
-        return
-
-    tgid_int = int(payload["tgid"])
-
-    cafe_code = DEFAULT_CAFE_CODE  # <- меняешь вручную в коде
-    user_links_text = (
-        "<b>Ссылки</b>\n"
-        "• Клиентам: <a href=\"https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE</a>\n"
-        "• Админу: <a href=\"https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE</a>\n"
-        "• В staff-группу: <a href=\"https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE</a>\n\n"
-        "В staff-группе выполните:\n"
-        f"<code>/bind {cafe_code}</code>"
-    )
-
-    payload["status"] = "sent"
-    payload["sent_at"] = int(time.time())
-    await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
-    await r.aclose()
-
-    client_token = (os.getenv("CLIENTBOTTOKEN") or "").strip()
+    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
     if not client_token:
-        await cb.answer("CLIENTBOTTOKEN не задан", show_alert=True)
+        await cb.answer("CLIENT_BOT_TOKEN не задан", show_alert=True)
         return
 
     client_bot = Bot(token=client_token)
@@ -1058,6 +1059,8 @@ async def paydraft_send(cb: CallbackQuery):
         await client_bot.session.close()
 
     await cb.answer("Отправлено")
+    if cb.message:
+        await cb.message.edit_reply_markup(reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("paydraft_cancel:"))
