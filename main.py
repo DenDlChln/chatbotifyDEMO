@@ -1804,8 +1804,8 @@ async def yookassa_webhook(request: web.Request):
             f"Срок действия до: <b>{valid_until_dt}</b>."
         )
 
-                        # --- Доп. сообщение: черновик + подтверждение админом ---
-        cafe_code = DEFAULT_CAFE_CODE  # вручную меняешь только это значение в константе выше
+                                # --- Доп. сообщение: черновик + подтверждение админом ---
+        cafe_code = DEFAULT_CAFE_CODE  # меняешь вручную только это (константа выше)
 
         user_links_text = (
             "<b>Ссылки</b>\n"
@@ -1817,10 +1817,12 @@ async def yookassa_webhook(request: web.Request):
         )
 
         draft_id = uuid.uuid4().hex[:12]
-        r = await get_redis_client()
+
+        # ВАЖНО: сохраняем в Redis только идентификаторы (без текста),
+        # чтобы хвост cafe_code можно было менять вручную до нажатия "✅ Отправить"
+        r = await getredisclient()
         payload = {
             "tgid": tgid_int,
-            "text": user_links_text,
             "status": "pending",
             "created_at": int(time.time()),
         }
@@ -1837,10 +1839,11 @@ async def yookassa_webhook(request: web.Request):
             f"tgid: <code>{tgid_int}</code>\n"
             f"Draft ID: <code>{draft_id}</code>\n\n"
             + user_links_text
+            + "\n\n<i>P.S. Хвост /bind берется из DEFAULT_CAFE_CODE на момент отправки.</i>"
         )
 
         await demo_bot.send_message(
-            ADMIN_ID,
+            ADMINID,
             preview,
             reply_markup=kb,
             disable_web_page_preview=True,
