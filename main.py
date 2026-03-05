@@ -1731,6 +1731,7 @@ async def yookassa_webhook(request: web.Request):
     data = await request.json()
     event = data.get("event")
     obj = data.get("object", {})
+    
     if event != "payment.succeeded":
         return web.json_response({"status": "ignored"})
 
@@ -1740,7 +1741,7 @@ async def yookassa_webhook(request: web.Request):
     # ✅ НОВОЕ: cafe_id из metadata (продление) ИЛИ из Redis (первый платёж) ИЛИ DEFAULT
     cafe_id = metadata.get("cafe_id")  # Продление из основного бота
     if not cafe_id:
-    # Первый платёж — ищем текущее кафе админа
+        # Первый платёж — ищем текущее кафе админа
         try:
             r = await get_redis_client()
             cafe_id = await r.get(f"user:{tgid}:cafe_id")  # был ли в основном боте
@@ -1748,11 +1749,11 @@ async def yookassa_webhook(request: web.Request):
                 cafe_id = DEFAULT_CAFE_ID  # дефолтное кафе из config
             await r.aclose()
         except Exception:
-        # Запасной вариант — всегда есть cafe_001
+            # Запасной вариант — всегда есть cafe_001
             logger.warning(f"Redis недоступен для tgid={tgid}, используем DEFAULT_CAFE_ID")
             cafe_id = DEFAULT_CAFE_ID
 
-# логируем с cafe_id
+    # логируем с cafe_id
     payment_id = obj.get("id")
     amount = obj.get("amount", {})
     amount_value = amount.get("value") if isinstance(amount, dict) else None
@@ -1764,9 +1765,9 @@ async def yookassa_webhook(request: web.Request):
         payment_id, cafe_id, payment_status, amount_value, amount_currency, tgid, metadata
     )
 
-if not tgid or not cafe_id:
-    logger.error(f"Missing tgid={tgid} or cafe_id={cafe_id}")
-    return web.json_response({"status": "missing_data"})
+    if not tgid or not cafe_id:
+        logger.error(f"Missing tgid={tgid} or cafe_id={cafe_id}")
+        return web.json_response({"status": "missing_data"})  # ✅ 4 пробела
 
     try:
         tgid_int = int(tgid)
@@ -1787,6 +1788,7 @@ if not tgid or not cafe_id:
 
         # ✅ НОВЫЙ КЛЮЧ: cafe:{cafe_id}:admin_subscription
         sub_key = f"cafe:{cafe_id}:admin_subscription"
+        # ... остальной код
         
         # читаем ТЕКУЩУЮ подписку ЭТОГО КАФЕ
         cur_s = await r.hget(sub_key, "cafebotify_valid_until")
