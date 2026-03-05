@@ -7,6 +7,7 @@ import random
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, Tuple
+import base64
 
 import redis.asyncio as redis
 from aiohttp import web
