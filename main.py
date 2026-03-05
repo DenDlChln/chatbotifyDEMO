@@ -1098,28 +1098,6 @@ async def paydraft_cancel(cb: CallbackQuery):
 
     r = await get_redis_client()
     raw = await r.get(_pay_draft_key(draft_id))
-    if raw:
-        payload = json.loads(raw)
-        payload["status"] = "canceled"
-        payload["canceled_at"] = int(time.time())
-        await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
-    await r.aclose()
-
-    await cb.answer("Ок, не отправляем")
-    if cb.message:
-        await cb.message.edit_reply_markup(reply_markup=None)
-
-
-@router.callback_query(F.data.startswith("paydraft_cancel:"))
-async def paydraft_cancel(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("Нет доступа", show_alert=True)
-        return
-
-    draft_id = (cb.data or "").split(":", 1)[1].strip()
-
-    r = await get_redis_client()
-    raw = await r.get(_pay_draft_key(draft_id))
     if not raw:
         await r.aclose()
         await cb.answer("Черновик не найден", show_alert=True)
