@@ -1006,6 +1006,87 @@ async def edit_cart(message: Message, state: FSMContext):
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
+@router.callback_query(F.data.startswith("paydraft_send:"))
+async def paydraft_send(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    draft_id = (cb.data or "").split(":", 1)[1].strip()
+
+    r = await get_redis_client()
+    raw = await r.get(_pay_draft_key(draft_id))
+    if not raw:
+        await r.aclose()
+        await cb.answer("Черновик не найден", show_alert=True)
+        return
+
+    payload = json.loads(raw)
+    if payload.get("status") != "pending":
+        await r.aclose()
+        await cb.answer("Уже обработано", show_alert=True)
+        return
+
+    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
+    if not client_token:
+        await r.aclose()
+        await cb.answer("CLIENT_BOT_TOKEN не задан", show_alert=True)
+        return
+
+    tgid = int(payload["tgid"])
+    text = str(payload["text"])
+
+    client_bot = Bot(token=client_token)
+    try:
+        await client_bot.send_message(tgid, text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        await cb.answer(f"Не отправлено: {e}", show_alert=True)
+        await r.aclose()
+        return
+    finally:
+        await client_bot.session.close()
+
+    payload["status"] = "sent"
+    payload["sent_at"] = int(time.time())
+    await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+    await r.aclose()
+
+    if cb.message:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Отправлено")
+
+
+@router.callback_query(F.data.startswith("paydraft_cancel:"))
+async def paydraft_cancel(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+
+    draft_id = (cb.data or "").split(":", 1)[1].strip()
+
+    r = await get_redis_client()
+    raw = await r.get(_pay_draft_key(draft_id))
+    if not raw:
+        await r.aclose()
+        await cb.answer("Черновик не найден", show_alert=True)
+        return
+
+    payload = json.loads(raw)
+    if payload.get("status") != "pending":
+        await r.aclose()
+        await cb.answer("Уже обработано", show_alert=True)
+        return
+
+    payload["status"] = "canceled"
+    payload["canceled_at"] = int(time.time())
+    await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+    await r.aclose()
+
+    if cb.message:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Отменено")
+
+
 @router.message(StateFilter(OrderStates.cart_edit_pick_item))
 async def pick_item_to_edit(message: Message, state: FSMContext):
     text = (message.text or "").strip()
