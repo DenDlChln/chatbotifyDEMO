@@ -234,10 +234,6 @@ class MenuEditStates(StatesGroup):
     pick_edit_item = State()
     waiting_for_edit_price = State()
     pick_remove_item = State()
-    
-
-class PayDraftEditStates(StatesGroup):
-    waiting_for_text = State()
 
 
 # ---------------- Working hours ----------------
