@@ -1785,6 +1785,46 @@ async def yookassa_webhook(request: web.Request):
             f"Срок действия до: <b>{valid_until_dt}</b>."
         )
 
+                # --- Доп. сообщение со ссылками (админ подтверждает отправку) ---
+        user_links_text = (
+            "<b>Ссылки</b>\n"
+            "• Клиентам: <a href=\"https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=Y2FmZV8wMDE</a>\n"
+            "• Админу: <a href=\"https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?start=YWRtaW46Y2FmZV8wMDE</a>\n"
+            "• В staff-группу: <a href=\"https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE\">https://t.me/cafebotifySTARTBOT?startgroup=Y2FmZV8wMDE</a>\n\n"
+            "В staff-группе выполните:\n"
+            "<code>/bind cafe_001</code>"
+        )
+
+        draft_id = uuid.uuid4().hex[:12]
+        r = await get_redis_client()
+        payload = {
+            "tgid": tgid_int,
+            "text": user_links_text,
+            "status": "pending",
+            "created_at": int(time.time()),
+        }
+        await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+        await r.aclose()
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Отправить ссылки", callback_data=f"paydraft_send:{draft_id}"),
+            InlineKeyboardButton(text="❌ Не отправлять", callback_data=f"paydraft_cancel:{draft_id}"),
+        ]])
+
+        preview = (
+            "<b>Черновик доп. сообщения клиенту</b>\n"
+            f"tgid: <code>{tgid_int}</code>\n"
+            f"Draft ID: <code>{draft_id}</code>\n\n"
+            + user_links_text
+        )
+        await demo_bot.send_message(
+            ADMIN_ID,
+            preview,
+            reply_markup=kb,
+            disable_web_page_preview=True,
+            parse_mode="HTML",
+        )
+
         # админу — от DEMO
         await demo_bot.send_message(ADMIN_ID, admin_text)
 
