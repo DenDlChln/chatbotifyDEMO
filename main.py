@@ -203,7 +203,7 @@ def build_links_text(cafe_code: str) -> str:
         f"• В staff-группу: <a href=\"https://t.me/{BOT_PUBLIC_USERNAME}?startgroup={group}\">"
         f"https://t.me/{BOT_PUBLIC_USERNAME}?startgroup={group}</a>\n\n"
         "В staff-группе выполните:\n"
-        f"<code>/bind {cafe_code}</code>"
+        "<code>/bind </code><i>(дописать код вручную)</i>"
     )
 
 router = Router()
