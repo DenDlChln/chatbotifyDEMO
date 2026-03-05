@@ -49,6 +49,12 @@ STATS_DRINK_REV_PREFIX = "stats:drink_revenue:"
 LAST_SEEN_KEY_PREFIX = "last_seen:"   # string timestamp
 LAST_ORDER_KEY_PREFIX = "last_order:" # string json snapshot
 
+# Drafts for payment notifications (admin approves sending to user)
+PAY_DRAFT_PREFIX = "paydraft:"  # key -> json
+
+def _pay_draft_key(draft_id: str) -> str:
+    return f"{PAY_DRAFT_PREFIX}{draft_id}"
+
 # Smart return
 CUSTOMERS_SET_KEY = "customers:set"
 CUSTOMER_KEY_PREFIX = "customer:"
