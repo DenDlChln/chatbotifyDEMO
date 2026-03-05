@@ -1760,14 +1760,12 @@ async def yookassa_webhook(request: web.Request):
     amount_currency = amount.get("currency") if isinstance(amount, dict) else None
     payment_status = obj.get("status")
 
-    logger.info(
-        "Yookassa webhook: payment_id=%s cafe_id=%s status=%s amount=%s %s raw_tgid=%s metadata=%s",
-        payment_id, cafe_id, payment_status, amount_value, amount_currency, tgid, metadata
-    )
+    logger.info(f"Yookassa: payment_id={payment_id} cafe_id={cafe_id} status={payment_status} "
+                f"amount={amount_value} {amount_currency} tgid={tgid}")
 
     if not tgid or not cafe_id:
         logger.error(f"Missing tgid={tgid} or cafe_id={cafe_id}")
-        return web.json_response({"status": "missing_data"})  # ✅ 4 пробела
+        return web.json_response({"status": "missing_data"})
 
     try:
         tgid_int = int(tgid)
