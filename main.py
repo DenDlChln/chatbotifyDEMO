@@ -84,7 +84,7 @@ def _parse_work_hours(obj: Any) -> Optional[Tuple[int, int]]:
 def load_config() -> Dict[str, Any]:
     default_config = {
         "name": "Кофейня «Уют» ☕",
-        "phone": "+7 989 273-67-56",
+        "phone": "+7 989 000-00-00",
         "admin_chat_id": 1471275603,
         "work_start": 9,
         "work_end": 21,
