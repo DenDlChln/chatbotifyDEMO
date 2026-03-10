@@ -1379,32 +1379,45 @@ async def booking_finish(message: Message, state: FSMContext):
 
 @router.message(F.from_user.id == ADMIN_ID)
 async def admin_reply_to_client(message: Message):
-    # Проверяем reply на сообщение БОТА
-    if not message.reply_to_message or not message.reply_to_message.from_user.is_bot:
-        return  # обычное сообщение админа — пропускаем
+    logger.info(f"ADMIN REPLY DEBUG: has_reply={message.reply_to_message is not None}")
     
-    # Проверяем, что это уведомление об оплате
-    replied_text = message.reply_to_message.text or ""
-    if "Новая оплата" not in replied_text and "CafebotifySTART" not in replied_text:
+    # 1. Проверяем reply на сообщение БОТА
+    if not message.reply_to_message:
+        logger.info("No reply_to_message")
         return
     
-    # Извлекаем tgid клиента из текста уведомления
+    if not message.reply_to_message.from_user.is_bot:
+        logger.info("Reply not to bot")
+        return
+    
+    # 2. Проверяем уведомление об оплате
+    replied_text = message.reply_to_message.text or ""
+    logger.info(f"Replied text preview: {replied_text[:100]}")
+    
+    if "Новая оплата" not in replied_text and "CafebotifySTART" not in replied_text:
+        logger.info("Not payment notification")
+        return
+    
+    # 3. Извлекаем tgid КЛИЕНТА из текста уведомления
     import re
     tgid_match = re.search(r"<code>(\d+)</code>", replied_text)
     if not tgid_match:
+        logger.error("No tgid in notification")
         await message.answer("❌ Не найден ID клиента")
         return
     
     client_id = int(tgid_match.group(1))
+    logger.info(f"Found client_id: {client_id}")
     
-    # ОТПРАВЛЯЕМ ОТ БОТА клиенту
+    # 4. ОТПРАВЛЯЕМ КЛИЕНТУ ОТ БОТА
     try:
         await message.bot.send_message(
             client_id,
-            f"💬 <b>Ответ от поддержки Cafebotify:</b>\n\n{message.text}",
+            f"💬 <b>Ответ от поддержки Cafebotify:</b>\n\n{html.quote(message.text or '')}",
             parse_mode="HTML"
         )
         await message.answer(f"✅ Отправлено клиенту <code>{client_id}</code>")
+        logger.info(f"Message sent to client {client_id}")
     except Exception as e:
         logger.error(f"Send error: {e}")
         await message.answer("❌ Ошибка отправки")
