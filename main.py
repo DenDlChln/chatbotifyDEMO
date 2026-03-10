@@ -1813,16 +1813,16 @@ async def yookassa_webhook(request: web.Request):
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-            text="💬 Написать плательщику", 
-            switch_inline_query_current_chat=f"[Ответ] tgid:{tgid_int} cafe:{cafe_id} draft:{draft_id}"
+                text="💬 Написать плательщику", 
+                callback_data=f"paydraft_write:{draft_id}:{tgid_int}:{cafe_id}"
             )]
         ])
 
         preview = (
-            "<b>Черновик доп. сообщения клиенту</b>\\n"
-            f"tgid: <code>{tgid_int}</code>\\n"
-            f"Кафе: <code>{cafe_id}</code>\\n"
-            f"Draft ID: <code>{draft_id}</code>\\n\\n"
+            "<b>Черновик доп. сообщения клиенту</b>\n"
+            f"tgid: <code>{tgid_int}</code>\n"
+            f"Кафе: <code>{cafe_id}</code>\n"
+            f"Draft ID: <code>{draft_id}</code>\n\n"
             + user_links_text
         )
 
