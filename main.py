@@ -1914,10 +1914,7 @@ async def yookassa_webhook(request: web.Request):
         await r.aclose()
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💬 Написать плательщику", 
-                callback_data=f"paydraft_write:{draft_id}:{tgid_int}:{cafe_id}"
-            )]
+            [InlineKeyboardButton(text="💬 ТЕСТ", callback_data="test_button")]
         ])
 
         preview = (
