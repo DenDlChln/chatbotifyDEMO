@@ -216,6 +216,25 @@ async def get_redis_client():
     return client
 
 
+def k_admin_subscription(cafe_id: str) -> str:
+    return f"cafe:{cafe_id}:admin_subscription"
+
+def k_cafe_profile(cafe_id: str) -> str:
+    return f"cafe:{cafe_id}:profile"
+
+def k_staff_group(cafe_id: str) -> str:
+    return f"cafe:{cafe_id}:staff_group_id"
+
+async def get_effective_admin_id(r: redis.Redis, cafe_id: str) -> int:
+    try:
+        raw = await r.hget(k_cafe_profile(cafe_id), "admin_id")
+        if raw is not None and str(raw).strip() != "":
+            return int(raw)
+    except Exception:
+        pass
+    return ADMIN_ID
+    
+
 def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
 
@@ -1688,6 +1707,8 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
 
 async def pay_month_handler(request: web.Request):
     tgid = request.query.get("tg_id") or request.query.get("tgid")
+    cafe_id = (request.query.get("cafe_id") or "").strip() or None
+    
     tgid_int: Optional[int] = None
     if tgid is not None:
         try:
@@ -1702,6 +1723,8 @@ async def pay_month_handler(request: web.Request):
     metadata = {"product": product}
     if tgid_int is not None:
         metadata["telegram_user_id"] = tgid_int
+    if cafe_id:
+        metadata["cafe_id"] = cafe_id
 
     confirmation_url = await create_payment(amount, description, metadata)
     raise web.HTTPFound(confirmation_url)
@@ -1709,6 +1732,8 @@ async def pay_month_handler(request: web.Request):
 
 async def pay_year_handler(request: web.Request):
     tgid = request.query.get("tg_id") or request.query.get("tgid")
+    cafe_id = (request.query.get("cafe_id") or "").strip() or None
+    
     tgid_int: Optional[int] = None
     if tgid is not None:
         try:
@@ -1723,6 +1748,8 @@ async def pay_year_handler(request: web.Request):
     metadata = {"product": product}
     if tgid_int is not None:
         metadata["telegram_user_id"] = tgid_int
+    if cafe_id:
+        metadata["cafe_id"] = cafe_id
 
     confirmation_url = await create_payment(amount, description, metadata)
     raise web.HTTPFound(confirmation_url)
@@ -1764,10 +1791,51 @@ async def yookassa_webhook(request: web.Request):
     now_ts = int(time.time())
     product = metadata.get("product") or "cafebotify_start_month"
     period_days = 360 if product == "cafebotify_start_year" else 30
-    valid_until = now_ts + period_days * 86400
-    valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y %H:%M")
 
+    valid_until = now_ts + period_days * 86400
+    base_ts = now_ts
+
+    sub_key = None
+    if cafe_id:
+        sub_key = k_admin_subscription(cafe_id)
+        try:
+            r = await get_redis_client()
+            raw_until = await r.hget(sub_key, "cafebotify_valid_until")
+            await r.aclose()
+            current_until = int(raw_until) if raw_until else 0
+            if current_until > now_ts:
+                base_ts = current_until
+        except Exception:
+            logger.exception("yookassa_webhook read current cafe subscription failed")
+
+    valid_until = base_ts + period_days * 86400
+    valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y %H:%M")
+    
     tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
+
+    if cafe_id:
+    try:
+        r = await get_redis_client()
+        eff_admin = await get_effective_admin_id(r, cafe_id)
+        await r.hset(
+            k_admin_subscription(cafe_id),
+            mapping={
+                "cafebotify_valid_until": str(valid_until),
+                "cafebotify_paid": "1",
+                "admin_id": str(eff_admin or 0),
+                "last_payment_id": str(payment_id or ""),
+                "last_product": str(product),
+                "last_amount_value": str(amount_value or ""),
+                "last_amount_currency": str(amount_currency or ""),
+                "last_paid_at": str(now_ts),
+            },
+        )
+        await r.aclose()
+    except Exception:
+        logger.exception(
+            f"yookassa_webhook failed to update cafe subscription cafe_id={cafe_id} payment_id={payment_id}"
+        )
+        return web.json_response({"status": "redis_update_failed"})
 
     draft_id = uuid.uuid4().hex[:12]
     payload = {
@@ -1803,6 +1871,12 @@ async def yookassa_webhook(request: web.Request):
         f"Draft ID: <code>{draft_id}</code>"
     )
 
+    admin_tail = (
+    "Подписка сразу привязана к кафе и обновлена в Redis."
+    if cafe_id else
+    "Первая оплата принята. Привязка кафе выполняется позже супер-админом."
+    )
+
     admin_text = (
         "💳 <b>Новая успешная оплата CafebotifySTART</b>\n\n"
         f"• tgid: <code>{tgid_int}</code>\n"
@@ -1812,7 +1886,7 @@ async def yookassa_webhook(request: web.Request):
         f"• cafe_id: {cafe_text}\n"
         f"• действует до: <b>{valid_until_dt}</b>\n"
         f"• Draft ID: <code>{draft_id}</code>\n\n"
-        "Первая оплата принята. Привязка кафе выполняется позже в отдельном боте."
+        f"{admin_tail}"
     )
 
     demo_bot = request.app["bot"]
@@ -1833,16 +1907,53 @@ async def yookassa_webhook(request: web.Request):
     except Exception:
         logger.exception(f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}")
 
+    if cafe_id:
+        try:
+            r = await get_redis_client()
+            eff_admin = await get_effective_admin_id(r, cafe_id)
+            group_id = await r.get(k_staff_group(cafe_id))
+            await r.aclose()
+        
+            if eff_admin and eff_admin != ADMIN_ID:
+            await demo_bot.send_message(
+                eff_admin,
+                admin_text,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+            )
+
+            if group_id:
+            await demo_bot.send_message(
+                int(group_id),
+                admin_text,
+                disable_web_page_preview=True,
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception(
+                f"yookassa_webhook secondary notify failed cafe_id={cafe_id} payment_id={payment_id}"
+            )
+    
     client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
     if client_token:
         client_bot = Bot(token=client_token)
         try:
-            user_text = (
-                "✅ <b>Оплата прошла успешно</b>\n\n"
-                f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
-                f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
-                "Следующий шаг — привязка свободного кафе администратором."
-            )
+            if cafe_id:
+                user_text = (
+                    "✅ <b>Оплата прошла успешно</b>\n\n"
+                    f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
+                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                    "Подписка кафе обновлена."
+                )
+            else:
+                user_text = (
+                    "✅ <b>Оплата прошла успешно</b>\n\n"
+                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                    "Следующий шаг — привязка свободного кафе администратором."
+                )
+
             await client_bot.send_message(tgid_int, user_text, parse_mode="HTML")
         except Exception:
             logger.exception(f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}")
