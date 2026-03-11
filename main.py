@@ -1706,7 +1706,11 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
 
 
 async def pay_month_handler(request: web.Request):
-    tgid = request.query.get("tg_id") or request.query.get("tgid")
+    tgid = (
+        request.query.get("tg_id")
+        or request.query.get("tgid")
+        or request.query.get("admin_id")
+    )
     cafe_id = (request.query.get("cafe_id") or "").strip() or None
     
     tgid_int: Optional[int] = None
@@ -1731,7 +1735,11 @@ async def pay_month_handler(request: web.Request):
 
 
 async def pay_year_handler(request: web.Request):
-    tgid = request.query.get("tg_id") or request.query.get("tgid")
+    tgid = (
+        request.query.get("tg_id")
+        or request.query.get("tgid")
+        or request.query.get("admin_id")
+    )
     cafe_id = (request.query.get("cafe_id") or "").strip() or None
     
     tgid_int: Optional[int] = None
