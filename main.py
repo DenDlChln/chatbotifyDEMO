@@ -2440,14 +2440,58 @@ async def set_paid_cmd(message: Message):
 @router.message(F.text)
 async def any_text_message(message: Message, state: FSMContext):
     text = (message.text or "").strip()
+
+    known_buttons = {
+        BTN_CLIENT_MENU,
+        BTN_OWNER_MENU,
+        BTN_TO_START,
+        BTN_ABOUT_ASSISTANT,
+        BTN_PAY_MONTH,
+        BTN_PAY_YEAR,
+        BTN_CART,
+        BTN_CHECKOUT,
+        BTN_BOOKING,
+        BTN_CALL,
+        BTN_HOURS,
+        BTN_STATS,
+        BTN_MENU_EDIT,
+        BTN_STAFF_GROUP,
+        BTN_LINKS,
+        BTN_RENEW_SUB,
+        BTN_SUBSCRIPTION,
+        BTN_ADMIN_HELP,
+        BTN_SUPPORT,
+        BTN_CONFIRM,
+        BTN_CANCEL,
+        BTN_CANCEL_ORDER,
+        BTN_READY_NOW,
+        BTN_READY_20,
+        BTN_EDIT_CART,
+        BTN_CLEAR_CART,
+        BTN_BACK,
+        CART_ACT_PLUS,
+        CART_ACT_MINUS,
+        CART_ACT_DEL,
+        CART_ACT_DONE,
+        MENU_EDIT_ADD,
+        MENU_EDIT_EDIT,
+        MENU_EDIT_DEL,
+    }
+
+    if text in known_buttons:
+        return
+
     if text in MENU:
         if not is_cafe_open():
-            await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
+            await message.answer(get_closed_message(), reply_markup=create_client_menu_keyboard())
             return
         await _start_add_item(message, state, text)
         return
 
-    await message.answer("Не понял. Используйте кнопки меню.", reply_markup=create_start_keyboard())
+    await message.answer(
+        "Не понял. Используйте кнопки меню.",
+        reply_markup=create_start_keyboard(),
+    )
 
 
 # ---------------- Startup / webhook ----------------
