@@ -694,7 +694,11 @@ def create_menu_edit_cancel_keyboard() -> ReplyKeyboardMarkup:
 def create_pick_menu_item_keyboard() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=k)] for k in MENU.keys()]
     rows.append([KeyboardButton(text=BTN_BACK)])
-     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, one_time_keyboard=True))
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 # ---------------- DEMO: examples for client ----------------
