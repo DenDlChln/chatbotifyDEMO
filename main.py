@@ -476,8 +476,7 @@ async def _show_cart(message: Message, state: FSMContext):
 
 
 # ---------------- Buttons ----------------
-# ---------------- Buttons ----------------
- = "🍽 Меню клиента"
+BTN_CLIENT_MENU = "🍽 Меню клиента"
 BTN_OWNER_MENU = "🧑‍💼 Меню владельца"
 BTN_ABOUT_ASSISTANT = "🤖 О помощнике CafeBotify"
 
