@@ -713,11 +713,10 @@ async def open_client_menu(message: Message, state: FSMContext):
         "🍽 <b>Меню клиента</b>\n\n"
         "Выберите напиток из списка ниже, чтобы добавить его в корзину.\n"
         "Когда будете готовы — перейдите в корзину, чтобы оформить заказ.",
-        reply_markup=create_client_keyboard(),  # клавиатура с напитками, корзиной и «🏠 Главное меню»
+        reply_markup=create_client_menu_keyboard(),
     )
 
 
-# ---- Хендлер: кнопка «🧑💼 Меню владельца» ----
 @router.message(F.text == BTN_OWNER_MENU)
 async def open_owner_menu(message: Message, state: FSMContext):
     await state.clear()
@@ -726,7 +725,7 @@ async def open_owner_menu(message: Message, state: FSMContext):
         "🧑💼 <b>Меню владельца кафе</b>\n\n"
         "Здесь вы можете управлять ассистентом CafeBotify: смотреть статистику, "
         "редактировать меню и настраивать приём заказов.",
-        reply_markup=create_owner_keyboard(),  # админские кнопки и «🏠 Главное меню»
+        reply_markup=create_owner_menu_keyboard(),
     )
 
 
