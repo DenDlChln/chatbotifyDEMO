@@ -1399,7 +1399,7 @@ async def open_client_menu(message: Message, state: FSMContext):
         "🍽 <b>Меню клиента</b>\n\n"
         "Выберите напиток из списка ниже, чтобы добавить его в корзину.\n"
         "Когда будете готовы — перейдите в корзину, чтобы оформить заказ.",
-        reply_markup=create_client_keyboard(),  # клавиатура с напитками, корзиной и «🏠 Главное меню»
+        reply_markup=create_client_menu_keyboard(),  # клавиатура с напитками, корзиной и «🏠 Главное меню»
     )
 
 
@@ -1428,7 +1428,7 @@ async def process_quantity(message: Message, state: FSMContext):
         cart = _get_cart(await state.get_data())
         await message.answer(
             "Ок.",
-            reply_markup=create_cart_keyboard(bool(cart)) if cart else create_client_keyboard()
+            reply_markup=create_cart_keyboard(bool(cart)) if cart else create_client_menu_keyboard()
         )
         return
 
@@ -1463,12 +1463,12 @@ async def process_quantity(message: Message, state: FSMContext):
 @router.message(F.text == BTN_CHECKOUT)
 async def checkout(message: Message, state: FSMContext):
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_client_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_client_menu_keyboard())
         return
 
     cart = _get_cart(await state.get_data())
     if not cart:
-        await message.answer("Корзина пустая.", reply_markup=create_client_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_client_menu_keyboard())
         return
 
     await state.set_state(OrderStates.waiting_for_confirmation)
@@ -1482,7 +1482,7 @@ async def checkout(message: Message, state: FSMContext):
 async def confirm_order(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL_ORDER:
         await state.clear()
-        await message.answer("❌ Отменено.", reply_markup=create_client_keyboard())
+        await message.answer("❌ Отменено.", reply_markup=create_client_menu_keyboard())
         return
 
     if message.text == BTN_CART:
@@ -1503,7 +1503,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
 
     if not cart:
         await state.clear()
-        await message.answer("Корзина пустая.", reply_markup=create_client_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_client_menu_keyboard())
         return
 
     try:
@@ -1514,7 +1514,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
             await state.clear()
             await message.answer(
                 f"⏳ Подождите {RATE_LIMIT_SECONDS} секунд между заказами.",
-                reply_markup=create_client_keyboard(),
+                reply_markup=create_client_menu_keyboard(),
             )
             return
         await r.setex(_rate_limit_key(user_id), RATE_LIMIT_SECONDS, str(time.time()))
@@ -1560,7 +1560,7 @@ async def _finalize_order(message: Message, state: FSMContext, ready_in_min: int
     await state.clear()
     await message.answer(
         f"🎉 <b>Заказ принят!</b>\n\n{_cart_text(cart)}\n\n⏱ Готовность: {html.quote(ready_line)}\n\n{finish}",
-        reply_markup=create_client_keyboard(),
+        reply_markup=create_client_menu_keyboard(),
     )
 
 
