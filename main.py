@@ -479,6 +479,7 @@ async def _show_cart(message: Message, state: FSMContext):
 # ---------------- Buttons ----------------
 BTN_CLIENT_MENU = "🍽 Меню клиента"
 BTN_OWNER_MENU = "🧑‍💼 Меню владельца"
+BTN_ABOUT_ASSISTANT = "🤖 О помощнике CafeBotify"
 
 BTN_CALL = "📞 Позвонить"
 BTN_HOURS = "⏰ Часы работы"
@@ -526,6 +527,7 @@ def create_start_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_CLIENT_MENU)],
             [KeyboardButton(text=BTN_OWNER_MENU)],
+            [KeyboardButton(text=BTN_ABOUT_ASSISTANT)],
             [KeyboardButton(text=BTN_PAY_MONTH), KeyboardButton(text=BTN_PAY_YEAR)],
         ],
         resize_keyboard=True,
@@ -800,6 +802,26 @@ def owner_support_text() -> str:
     )
 
 
+def about_assistant_text() -> str:
+    return (
+        "🤖 <b>CafeBotify — ваш цифровой администратор кафе</b>\n\n"
+        "Пока бариста готовят кофе, CafeBotify берёт на себя рутину:\n"
+        "заказы, бронирования, напоминания и общение с гостями в Telegram.\n\n"
+        "💸 <b>Для владельца:</b>\n"
+        "• Меньше пропущенных звонков и хаоса в мессенджерах — бот принимает заказы 24/7.\n"
+        "• Чёткая стата по заказам и выручке — видно, что реально продаётся, а что занимает место в меню.\n"
+        "• Автоматические напоминания гостям — бот сам возвращает людей, даже когда у вас завал.\n"
+        "• Простое управление меню — цены и позиции меняются прямо из Telegram, без верстальщиков и программистов.\n\n"
+        "☕ <b>Для гостей:</b>\n"
+        "• Быстрый заказ без звонков и ожидания на линии.\n"
+        "• Удобное бронирование столиков в пару тапов.\n"
+        "• Актуальное меню, часы работы и телефон всегда под рукой.\n\n"
+        "📲 CafeBotify не заменяет живой сервис — он снимает рутину с персонала, "
+        "чтобы команда занималась главным: вкусным кофе и гостями в зале.\n\n"
+        "Подробнее о возможностях и тарифах — на лендинге:"
+    )
+
+
 # ---------------- /start ----------------
 WELCOME_VARIANTS = [
     "Рад тебя видеть, {name}!",
@@ -924,6 +946,16 @@ async def repeat_last(message: Message, state: FSMContext):
 
     await state.update_data(cart=filtered)
     await _show_cart(message, state)
+
+
+@router.message(F.text == BTN_ABOUT_ASSISTANT)
+async def about_assistant(message: Message):
+    await message.answer(
+        about_assistant_text() + "\n\n"
+        "<a href=\"https://cafebotify.tilda.ws\">Перейти на сайт CafeBotify</a>",
+        disable_web_page_preview=False,
+        reply_markup=create_start_keyboard(),
+    )
 
 
 # ---------------- Pay buttons ----------------
