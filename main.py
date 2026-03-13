@@ -827,7 +827,10 @@ async def cmd_start(message: Message, state: FSMContext):
     await set_last_seen(user_id)
 
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_main_keyboard())
+        await message.answer(
+            get_closed_message(),
+            reply_markup=create_start_keyboard(),
+        )
         return
 
     if offer_repeat:
@@ -840,6 +843,7 @@ async def cmd_start(message: Message, state: FSMContext):
                     lines.append(f"• {html.quote(str(d))} × {int(q)}")
                 except Exception:
                     continue
+
             await state.update_data(repeat_offer_snapshot=snap)
             await message.answer(
                 f"{welcome}\n\nВы давно не заходили. Повторить последний заказ?\n\n" + "\n".join(lines),
@@ -848,10 +852,12 @@ async def cmd_start(message: Message, state: FSMContext):
             return
 
     await message.answer(
-        f"{welcome}\n\n🏪 {get_work_status()}{_address_line()}\n\n"
-        "Чтобы добавить в корзину: нажмите напиток → выберите количество.\n"
-        "Корзина — «🛒 Корзина».",
-        reply_markup=create_main_keyboard(),
+        f"{welcome}\n\n"
+        f"🏪 {get_work_status()}{_address_line()}\n\n"
+        "Выберите раздел ниже:\n"
+        "• Меню клиента — для заказа и бронирования\n"
+        "• Меню владельца — для просмотра функций управления",
+        reply_markup=create_start_keyboard(),
     )
 
 
