@@ -490,8 +490,10 @@ BTN_STAFF_GROUP = "👥 Группа персонала"
 BTN_LINKS = "🔗 Ссылки"
 BTN_RENEW_SUB = "💳 Продлить подписку"
 BTN_SUBSCRIPTION = "🗓 Подписка"
+BTN_ADS = "📢 Реклама"
+BTN_BROADCAST = "📣 Рассылка"
 BTN_ADMIN_HELP = "ℹ️ Справка админа"
-BTN_SUPPORT = "🆘 Поддержка"
+BTN_SUPPORT = "🛟 Поддержка"
 
 BTN_CART = "🛒 Корзина"
 BTN_CHECKOUT = "✅ Оформить"
@@ -502,6 +504,7 @@ BTN_EDIT_CART = "✏️ Изменить"
 BTN_CANCEL = "🔙 Отмена"
 BTN_BACK = "⬅️ Назад"
 BTN_TO_START = "🏠 Главное меню"
+BTN_TO_CLIENT_MODE = "⬅️ В клиентский режим"
 
 BTN_CONFIRM = "Подтвердить"
 BTN_READY_NOW = "🚶 Сейчас"
@@ -564,8 +567,9 @@ def create_owner_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_MENU_EDIT)],
             [KeyboardButton(text=BTN_STAFF_GROUP), KeyboardButton(text=BTN_LINKS)],
             [KeyboardButton(text=BTN_RENEW_SUB), KeyboardButton(text=BTN_SUBSCRIPTION)],
+            [KeyboardButton(text=BTN_ADS), KeyboardButton(text=BTN_BROADCAST)],
             [KeyboardButton(text=BTN_ADMIN_HELP), KeyboardButton(text=BTN_SUPPORT)],
-            [KeyboardButton(text=BTN_TO_START)],
+            [KeyboardButton(text=BTN_TO_CLIENT_MODE)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -815,6 +819,32 @@ def owner_subscription_text() -> str:
     )
 
 
+def owner_ads_text() -> str:
+    return (
+        "📢 <b>Реклама</b>\n\n"
+        "Этот раздел поможет кафе привлекать новых гостей и возвращать тех, кто давно не заходил.\n\n"
+        "Что здесь может быть:\n"
+        "• запуск акций и спецпредложений;\n"
+        "• промокоды на напитки и десерты;\n"
+        "• рекламные сообщения для новых и постоянных гостей;\n"
+        "• отдельные офферы на утро, обед и вечер.\n\n"
+        "Идея простая: не просто наливать кофе, а системно приводить людей обратно."
+    )
+
+
+def owner_broadcast_text() -> str:
+    return (
+        "📣 <b>Рассылка</b>\n\n"
+        "Этот раздел нужен для быстрых сообщений вашим клиентам прямо в Telegram.\n\n"
+        "Что можно делать:\n"
+        "• сообщать о новых позициях в меню;\n"
+        "• запускать анонсы акций и скидок;\n"
+        "• напоминать о себе в тихие дни;\n"
+        "• возвращать гостей точечными предложениями.\n\n"
+        "Так кафе остаётся на связи с клиентами без ручной переписки и хаоса."
+    )
+
+
 def owner_admin_help_text() -> str:
     return (
         "ℹ️ <b>Справка админа</b>\n\n"
@@ -1061,6 +1091,27 @@ async def owner_links(message: Message):
 @router.message(F.text == BTN_RENEW_SUB)
 async def owner_renew_subscription(message: Message):
     await message.answer(owner_renew_subscription_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_ADS)
+async def owner_ads(message: Message):
+    await message.answer(owner_ads_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_BROADCAST)
+async def owner_broadcast(message: Message):
+    await message.answer(owner_broadcast_text(), reply_markup=create_owner_menu_keyboard())
+
+
+@router.message(F.text == BTN_TO_CLIENT_MODE)
+async def back_to_client_mode(message: Message, state: FSMContext):
+    await state.clear()
+    await sync_menu_from_redis()
+    await message.answer(
+        "🍽 <b>Клиентский режим</b>\n\n"
+        "Вы снова в клиентском меню. Здесь можно выбрать напитки, оформить заказ или забронировать столик.",
+        reply_markup=create_client_menu_keyboard(),
+    )
 
 
 @router.message(F.text == BTN_SUBSCRIPTION)
