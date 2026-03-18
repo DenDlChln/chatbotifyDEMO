@@ -1136,9 +1136,9 @@ async def menu_edit_entry(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         if DEMO_MODE:
             await message.answer(demo_menu_edit_preview_text(), reply_markup=create_menu_edit_keyboard())
-            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_start_keyboard())
+            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_owner_menu_keyboard())
         else:
-            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_start_keyboard())
+            await message.answer("🔒 Редактирование доступно только администратору.", reply_markup=create_owner_menu_keyboard())
         return
 
     await sync_menu_from_redis()
@@ -1155,7 +1155,7 @@ async def menu_edit_choose_action(message: Message, state: FSMContext):
 
     if message.text == BTN_BACK:
         await state.clear()
-        await message.answer("Ок.", reply_markup=create_start_keyboard())
+        await message.answer("Ок.", reply_markup=create_owner_menu_keyboard())
         return
 
     if message.text == MENU_EDIT_ADD:
@@ -1220,7 +1220,7 @@ async def menu_edit_add_price(message: Message, state: FSMContext):
     name = str(data.get("add_name") or "").strip()
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Добавлено.", reply_markup=create_start_keyboard())
+    await message.answer("✅ Добавлено.", reply_markup=create_owner_menu_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.pick_edit_item))
@@ -1267,12 +1267,12 @@ async def menu_edit_price(message: Message, state: FSMContext):
     name = str(data.get("edit_name") or "")
     if name not in MENU:
         await state.clear()
-        await message.answer("Позиция не найдена. /start", reply_markup=create_start_keyboard())
+        await message.answer("Позиция не найдена. /start", reply_markup=create_owner_menu_keyboard())
         return
 
     await menu_set_item(name, price)
     await state.clear()
-    await message.answer("✅ Цена изменена.", reply_markup=create_start_keyboard())
+    await message.answer("✅ Цена изменена.", reply_markup=create_owner_menu_keyboard())
 
 
 @router.message(StateFilter(MenuEditStates.pick_remove_item))
@@ -1293,7 +1293,7 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 
     await menu_delete_item(picked)
     await state.clear()
-    await message.answer("🗑 Удалено.", reply_markup=create_start_keyboard())
+    await message.answer("🗑 Удалено.", reply_markup=create_owner_menu_keyboard())
 
 
 # ---------------- Stats button (DEMO preview for non-admin) ----------------
@@ -1301,9 +1301,9 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 async def stats_button(message: Message):
     if message.from_user.id != ADMIN_ID:
         if DEMO_MODE:
-            await message.answer(demo_stats_preview_text(), reply_markup=create_start_keyboard())
+            await message.answer(demo_stats_preview_text(), reply_markup=create_owner_menu_keyboard())
         else:
-            await message.answer("📊 Статистика доступна администратору.", reply_markup=create_start_keyboard())
+            await message.answer("📊 Статистика доступна администратору.", reply_markup=create_owner_menu_keyboard())
         return
 
     try:
@@ -1325,9 +1325,9 @@ async def stats_button(message: Message):
             f"Выручка всего: <b>{total_rev}₽</b>\n\n"
             "<b>По позициям:</b>\n" + "\n".join(lines)
         )
-        await message.answer(text, reply_markup=create_start_keyboard())
+        await message.answer(text, reply_markup=create_owner_menu_keyboard())
     except Exception:
-        await message.answer("❌ Ошибка статистики", reply_markup=create_start_keyboard())
+        await message.answer("❌ Ошибка статистики", reply_markup=create_owner_menu_keyboard())
 
 
 # ---------------- Cart show/clear/cancel ----------------
