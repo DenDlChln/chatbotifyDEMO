@@ -570,6 +570,7 @@ def create_owner_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_ADS), KeyboardButton(text=BTN_BROADCAST)],
             [KeyboardButton(text=BTN_ADMIN_HELP), KeyboardButton(text=BTN_SUPPORT)],
             [KeyboardButton(text=BTN_TO_CLIENT_MODE)],
+            [KeyboardButton(text=BTN_TO_START)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -867,6 +868,19 @@ def owner_support_text() -> str:
         "• получить помощь по настройке;\n"
         "• сообщить о проблеме;\n"
         "• уточнить вопросы по оплате и подписке;\n"
+    )
+
+
+def owner_client_mode_text() -> str:
+    return (
+        "⬅️ <b>В клиентский режим</b>\n\n"
+        "Эта кнопка показывает, как выглядит клиентская часть бота для гостей кафе.\n\n"
+        "Здесь можно:\n"
+        "• посмотреть меню глазами клиента;\n"
+        "• проверить путь заказа и корзину;\n"
+        "• протестировать бронирование;\n"
+        "• убедиться, что клиентский сценарий работает удобно и понятно.\n\n"
+        "Это полезно для владельца: вы сразу видите сервис так, как его видит гость."
     )
 
 
@@ -2529,6 +2543,7 @@ async def any_text_message(message: Message, state: FSMContext):
         CART_ACT_DONE,
         MENU_EDIT_ADD,
         MENU_EDIT_EDIT,
+        BTN_TO_CLIENT_MODE,
         MENU_EDIT_DEL,
     }
 
