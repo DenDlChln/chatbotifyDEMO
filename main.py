@@ -1123,8 +1123,7 @@ async def back_to_client_mode(message: Message, state: FSMContext):
     await state.clear()
     await sync_menu_from_redis()
     await message.answer(
-        "🍽 <b>Клиентский режим</b>\n\n"
-        "Вы снова в клиентском меню. Здесь можно выбрать напитки, оформить заказ или забронировать столик.",
+        owner_client_mode_text(),
         reply_markup=create_client_menu_keyboard(),
     )
 
