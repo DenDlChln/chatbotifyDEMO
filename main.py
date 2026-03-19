@@ -1345,7 +1345,7 @@ async def stats_button(message: Message):
 @router.message(F.text == BTN_CART)
 async def cart_button(message: Message, state: FSMContext):
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_client_menu_keyboard())
         return
     await _show_cart(message, state)
 
@@ -1359,7 +1359,7 @@ async def clear_cart(message: Message, state: FSMContext):
 @router.message(F.text == BTN_CANCEL_ORDER)
 async def cancel_order(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Заказ отменён.", reply_markup=create_start_keyboard())
+    await message.answer("❌ Заказ отменён.", reply_markup=create_client_menu_keyboard())
 
 
 # ---------------- Cart edit ----------------
@@ -1367,7 +1367,7 @@ async def cancel_order(message: Message, state: FSMContext):
 async def edit_cart(message: Message, state: FSMContext):
     cart = _get_cart(await state.get_data())
     if not cart:
-        await message.answer("Корзина пустая.", reply_markup=create_start_keyboard())
+        await message.answer("Корзина пустая.", reply_markup=create_client_menu_keyboard())
         return
     await state.set_state(OrderStates.cart_edit_pick_item)
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
@@ -1472,7 +1472,7 @@ async def open_client_menu(message: Message, state: FSMContext):
 async def _start_add_item(message: Message, state: FSMContext, drink: str):
     price = MENU.get(drink)
     if price is None:
-        await message.answer("Этой позиции уже нет.", reply_markup=create_start_keyboard())
+        await message.answer("Этой позиции уже нет.", reply_markup=create_client_menu_keyboard()())
         return
 
     cart = _get_cart(await state.get_data())
@@ -1511,7 +1511,7 @@ async def process_quantity(message: Message, state: FSMContext):
 
     if not drink or drink not in MENU:
         await state.clear()
-        await message.answer("Ошибка. Нажмите /start.", reply_markup=create_start_keyboard())
+        await message.answer("Ошибка. Нажмите /start.", reply_markup=create_client_menu_keyboard())
         return
 
     cart[drink] = int(cart.get(drink, 0)) + qty
@@ -1651,7 +1651,7 @@ async def ready_time(message: Message, state: FSMContext):
 async def booking_start(message: Message, state: FSMContext):
     await state.clear()
     if not is_cafe_open():
-        await message.answer(get_closed_message(), reply_markup=create_start_keyboard())
+        await message.answer(get_closed_message(), reply_markup=create_client_menu_keyboard())
         return
 
     await state.set_state(BookingStates.waiting_for_datetime)
@@ -1665,7 +1665,7 @@ async def booking_start(message: Message, state: FSMContext):
 async def booking_datetime(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_client_menu_keyboard())
         return
 
     m = re.match(r"(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})", message.text or "")
@@ -1690,7 +1690,7 @@ async def booking_datetime(message: Message, state: FSMContext):
 async def booking_people(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_client_menu_keyboard())
         return
 
     try:
@@ -1710,7 +1710,7 @@ async def booking_people(message: Message, state: FSMContext):
 async def booking_finish(message: Message, state: FSMContext):
     if message.text == BTN_CANCEL:
         await state.clear()
-        await message.answer("Ок, бронирование отменено.", reply_markup=create_start_keyboard())
+        await message.answer("Ок, бронирование отменено.", reply_markup=create_client_menu_keyboard())
         return
 
     data = await state.get_data()
