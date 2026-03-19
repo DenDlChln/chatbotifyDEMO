@@ -1119,12 +1119,10 @@ async def owner_broadcast(message: Message):
 
 
 @router.message(F.text == BTN_TO_CLIENT_MODE)
-async def back_to_client_mode(message: Message, state: FSMContext):
-    await state.clear()
-    await sync_menu_from_redis()
+async def owner_client_mode_info(message: Message):
     await message.answer(
         owner_client_mode_text(),
-        reply_markup=create_client_menu_keyboard(),
+        reply_markup=create_owner_menu_keyboard(),
     )
 
 
