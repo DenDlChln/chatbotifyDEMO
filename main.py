@@ -1909,7 +1909,7 @@ async def smart_return_check_and_send(bot: Bot):
         favorite = await _get_favorite_drink(user_id) or profile.get("last_drink") or ""
         promo = _promo_code_for_user(user_id)
         text = (
-            f"{html.escape(str(firstname) or 'Друзья')},\n\n"
+            f"{html.quote(str(firstname) or 'Друзья')},\n\n"
             f"Скучаете по <b>{html.quote(str(favorite))}</b>? "
             f"Дарим <b>{RETURN_DISCOUNT_PERCENT}% скидку</b> на него по промокоду:\n\n"
             f"<code>{promo}</code>\n\n"
