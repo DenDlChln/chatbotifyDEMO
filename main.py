@@ -233,7 +233,41 @@ async def get_effective_admin_id(r: redis.Redis, cafe_id: str) -> int:
     except Exception:
         pass
     return ADMIN_ID
-    
+
+
+async def get_bound_active_cafe_id_by_admin(r: redis.Redis, admin_tg_id: int) -> Optional[str]:
+    keys = await r.keys("cafe:*:profile")
+    for key in keys:
+        try:
+            parts = key.split(":")
+            if len(parts) < 3:
+                continue
+
+            candidate_cafe_id = parts[1]
+            admin_id_raw = await r.hget(key, "admin_id")
+            if not admin_id_raw or int(admin_id_raw) != admin_tg_id:
+                continue
+
+            sub = await r.hgetall(k_admin_subscription(candidate_cafe_id))
+            paid_flag = str(sub.get("cafebotify_paid", "0")).strip()
+            valid_until_raw = str(sub.get("cafebotify_valid_until", "0")).strip()
+
+            try:
+                valid_until_ts = int(valid_until_raw or 0)
+            except Exception:
+                valid_until_ts = 0
+
+            if paid_flag == "1" or valid_until_ts > 0:
+                return candidate_cafe_id
+        except Exception:
+            continue
+
+    return None
+
+
+async def has_active_bound_cafe_by_admin(r: redis.Redis, admin_tg_id: int) -> bool:
+    cafe_id = await get_bound_active_cafe_id_by_admin(r, admin_tg_id)
+    return bool(cafe_id)
 
 def _rate_limit_key(user_id: int) -> str:
     return f"rate_limit:{user_id}"
@@ -2252,30 +2286,22 @@ async def yookassa_webhook(request: web.Request):
     except (TypeError, ValueError):
         return web.json_response({"status": "bad_tgid"})
 
-    resolved_cafe_id = (str(cafe_id).strip() if cafe_id else "") or None
+    requested_cafe_id = (str(cafe_id).strip() if cafe_id else "") or None
+    resolved_cafe_id = requested_cafe_id
 
     if not resolved_cafe_id:
         try:
             r = await get_redis_client()
-            keys = await r.keys("cafe:*:profile")
-            for key in keys:
-                try:
-                    admin_id_raw = await r.hget(key, "admin_id")
-                    if admin_id_raw and int(admin_id_raw) == tgid_int:
-                        parts = key.split(":")
-                        if len(parts) >= 3:
-                            resolved_cafe_id = parts[1]
-                            break
-                except Exception:
-                    continue
+            resolved_cafe_id = await get_bound_active_cafe_id_by_admin(r, tgid_int)
             await r.aclose()
         except Exception:
             logger.exception(
-                f"yookassa_webhook resolve cafe by tgid failed "
+                f"yookassa_webhook resolve active cafe by tgid failed "
                 f"payment_id={payment_id} tgid={tgid_int}"
             )
 
     cafe_id = resolved_cafe_id
+    is_new_payment_without_cafe = not bool(cafe_id)
 
     now_ts = int(time.time())
     product = metadata.get("product") or "cafebotify_start_month"
@@ -2374,7 +2400,7 @@ async def yookassa_webhook(request: web.Request):
     )
 
     admin_kb = None
-    if cafe_id:
+    if is_new_payment_without_cafe:
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
