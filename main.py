@@ -2347,7 +2347,7 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook draft redis error: {e}")
         return web.json_response({"status": "redis_error"})
 
-    cafe_text = (
+     cafe_text = (
         f"<code>{html.quote(str(cafe_id))}</code>"
         if cafe_id else
         "<b>не привязан</b>"
@@ -2405,7 +2405,6 @@ async def yookassa_webhook(request: web.Request):
         try:
             r = await get_redis_client()
             eff_admin = await get_effective_admin_id(r, cafe_id)
-            group_id = await r.get(k_staff_group(cafe_id))
             await r.aclose()
 
             if eff_admin and eff_admin != ADMIN_ID:
@@ -2414,18 +2413,11 @@ async def yookassa_webhook(request: web.Request):
                     admin_text,
                     disable_web_page_preview=True,
                     parse_mode="HTML",
-                )
-
-            if group_id:
-                await demo_bot.send_message(
-                    int(group_id),
-                    admin_text,
-                    disable_web_page_preview=True,
-                    parse_mode="HTML",
+                    reply_markup=admin_kb,
                 )
         except Exception:
             logger.exception(
-                f"yookassa_webhook secondary notify failed "
+                f"yookassa_webhook eff_admin notify failed "
                 f"cafe_id={cafe_id} payment_id={payment_id}"
             )
 
@@ -2449,7 +2441,12 @@ async def yookassa_webhook(request: web.Request):
                     "Следующий шаг — привязка свободного кафе администратором."
                 )
 
-            await client_bot.send_message(tgid_int, user_text, parse_mode="HTML")
+            await client_bot.send_message(
+                tgid_int,
+                user_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
         except Exception:
             logger.exception(
                 f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}"
@@ -2460,26 +2457,6 @@ async def yookassa_webhook(request: web.Request):
         logger.info(
             f"CLIENT_BOT_TOKEN not set; skip client bot notify "
             f"tgid={tgid_int} payment_id={payment_id}"
-        )
-
-    try:
-        if cafe_id:
-            demo_text = (
-                "🎉 <b>Оплата прошла!</b>\n\n"
-                f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
-                f"Тариф <b>CafebotifySTART</b> активен до <b>{valid_until_dt}</b>.\n\n"
-                "Подписка продлена/обновлена для вашего кафе.\n"
-            )
-        else:
-            demo_text = (
-                "🎉 <b>Оплата прошла!</b>\n\n"
-                f"Тариф <b>CafebotifySTART</b> активен до <b>{valid_until_dt}</b>.\n\n"
-            )
-
-        await demo_bot.send_message(tgid_int, demo_text, parse_mode="HTML")
-    except Exception:
-        logger.exception(
-            f"yookassa_webhook demo user notify error payment_id={payment_id} tgid={tgid}"
         )
 
     return web.json_response({"status": "ok"})
