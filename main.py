@@ -2390,7 +2390,7 @@ async def yookassa_webhook(request: web.Request):
 
     try:
         await demo_bot.send_message(
-            ADMIN_ID,
+            SUPERADMIN_ID,
             admin_text,
             disable_web_page_preview=True,
             parse_mode="HTML",
@@ -2398,28 +2398,8 @@ async def yookassa_webhook(request: web.Request):
         )
     except Exception:
         logger.exception(
-            f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}"
+            f"yookassa_webhook superadmin notify error payment_id={payment_id} tgid={tgid}"
         )
-
-    if cafe_id:
-        try:
-            r = await get_redis_client()
-            eff_admin = await get_effective_admin_id(r, cafe_id)
-            await r.aclose()
-
-            if eff_admin and eff_admin != ADMIN_ID:
-                await demo_bot.send_message(
-                    eff_admin,
-                    admin_text,
-                    disable_web_page_preview=True,
-                    parse_mode="HTML",
-                    reply_markup=admin_kb,
-                )
-        except Exception:
-            logger.exception(
-                f"yookassa_webhook eff_admin notify failed "
-                f"cafe_id={cafe_id} payment_id={payment_id}"
-            )
 
     client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
     if client_token:
@@ -2449,7 +2429,7 @@ async def yookassa_webhook(request: web.Request):
             )
         except Exception:
             logger.exception(
-                f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}"
+                f"yookassa_webhook client bot notify error payment_id={payment_id} tgid={tgid}"
             )
         finally:
             await client_bot.session.close()
@@ -2458,6 +2438,35 @@ async def yookassa_webhook(request: web.Request):
             f"CLIENT_BOT_TOKEN not set; skip client bot notify "
             f"tgid={tgid_int} payment_id={payment_id}"
         )
+
+    if tgid_int != ADMIN_ID:
+        try:
+            if cafe_id:
+                demo_text = (
+                    "✅ <b>Оплата прошла успешно</b>\n\n"
+                    f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
+                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                    "Подписка кафе обновлена."
+                )
+            else:
+                demo_text = (
+                    "✅ <b>Оплата прошла успешно</b>\n\n"
+                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                    "Следующий шаг — привязка свободного кафе администратором."
+                )
+
+            await demo_bot.send_message(
+                tgid_int,
+                demo_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception(
+                f"yookassa_webhook demo bot notify error payment_id={payment_id} tgid={tgid}"
+            )
 
     return web.json_response({"status": "ok"})
 
