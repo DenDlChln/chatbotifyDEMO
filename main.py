@@ -2439,23 +2439,14 @@ async def yookassa_webhook(request: web.Request):
             f"tgid={tgid_int} payment_id={payment_id}"
         )
 
-    if tgid_int != ADMIN_ID:
+    if not cafe_id and tgid_int != ADMIN_ID:
         try:
-            if cafe_id:
-                demo_text = (
-                    "✅ <b>Оплата прошла успешно</b>\n\n"
-                    f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
-                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
-                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
-                    "Подписка кафе обновлена."
-                )
-            else:
-                demo_text = (
-                    "✅ <b>Оплата прошла успешно</b>\n\n"
-                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
-                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
-                    "Следующий шаг — привязка свободного кафе администратором."
-                )
+            demo_text = (
+                "✅ <b>Оплата прошла успешно</b>\n\n"
+                f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
+                f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                "Следующий шаг — привязка свободного кафе администратором."
+            )
 
             await demo_bot.send_message(
                 tgid_int,
@@ -2469,6 +2460,7 @@ async def yookassa_webhook(request: web.Request):
             )
 
     return web.json_response({"status": "ok"})
+    
 
 # ---------------- Команды суперадмина: профиль и оплата ----------------
 def _parse_kv_payload(text: str) -> Dict[str, str]:
