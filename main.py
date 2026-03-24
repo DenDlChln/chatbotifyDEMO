@@ -237,6 +237,8 @@ async def get_effective_admin_id(r: redis.Redis, cafe_id: str) -> int:
 
 async def find_free_cafe_id(r: redis.Redis) -> Optional[str]:
     keys = await r.keys("cafe:*:profile")
+    now_ts = int(time.time())
+
     for key in keys:
         try:
             parts = key.split(":")
@@ -248,6 +250,18 @@ async def find_free_cafe_id(r: redis.Redis) -> Optional[str]:
             if admin_id_raw and str(admin_id_raw).strip() not in ("", "0"):
                 continue
 
+            sub = await r.hgetall(k_admin_subscription(cafe_id))
+            paid_flag = str(sub.get("cafebotify_paid", "0")).strip()
+            valid_until_raw = str(sub.get("cafebotify_valid_until", "0")).strip()
+
+            try:
+                valid_until_ts = int(valid_until_raw or 0)
+            except Exception:
+                valid_until_ts = 0
+
+            if paid_flag == "1" or valid_until_ts > now_ts:
+                continue
+
             return cafe_id
         except Exception:
             continue
@@ -257,6 +271,8 @@ async def find_free_cafe_id(r: redis.Redis) -> Optional[str]:
 
 async def get_bound_active_cafe_id_by_admin(r: redis.Redis, admin_tg_id: int) -> Optional[str]:
     keys = await r.keys("cafe:*:profile")
+    now_ts = int(time.time())
+
     for key in keys:
         try:
             parts = key.split(":")
@@ -277,13 +293,13 @@ async def get_bound_active_cafe_id_by_admin(r: redis.Redis, admin_tg_id: int) ->
             except Exception:
                 valid_until_ts = 0
 
-            if paid_flag == "1" or valid_until_ts > 0:
+            if paid_flag == "1" and valid_until_ts > now_ts:
                 return candidate_cafe_id
         except Exception:
             continue
 
     return None
-
+    
 
 async def has_active_bound_cafe_by_admin(r: redis.Redis, admin_tg_id: int) -> bool:
     cafe_id = await get_bound_active_cafe_id_by_admin(r, admin_tg_id)
@@ -763,19 +779,6 @@ def create_pick_menu_item_keyboard() -> ReplyKeyboardMarkup:
 
 
 # ---- Хендлер: кнопка «🍽 Меню клиента» ----
-@router.message(F.text == BTN_CLIENT_MENU)
-async def open_client_menu(message: Message, state: FSMContext):
-    await state.clear()
-    await sync_menu_from_redis()
-
-    await message.answer(
-        "🍽 <b>Меню клиента</b>\n\n"
-        "Выберите напиток из списка ниже, чтобы добавить его в корзину.\n"
-        "Когда будете готовы — перейдите в корзину, чтобы оформить заказ.",
-        reply_markup=create_client_menu_keyboard(),
-    )
-
-
 @router.message(F.text == BTN_OWNER_MENU)
 async def open_owner_menu(message: Message, state: FSMContext):
     await state.clear()
@@ -1528,7 +1531,7 @@ async def open_client_menu(message: Message, state: FSMContext):
 async def _start_add_item(message: Message, state: FSMContext, drink: str):
     price = MENU.get(drink)
     if price is None:
-        await message.answer("Этой позиции уже нет.", reply_markup=create_client_menu_keyboard()())
+        await message.answer("Этой позиции уже нет.", reply_markup=create_client_menu_keyboard())
         return
 
     cart = _get_cart(await state.get_data())
