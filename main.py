@@ -2469,17 +2469,11 @@ async def yookassa_webhook(request: web.Request):
                 f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
                 f"Тариф <b>CafebotifySTART</b> активен до <b>{valid_until_dt}</b>.\n\n"
                 "Подписка продлена/обновлена для вашего кафе.\n"
-                "Если появятся вопросы — просто ответьте на это сообщение."
             )
         else:
             demo_text = (
                 "🎉 <b>Оплата прошла!</b>\n\n"
                 f"Тариф <b>CafebotifySTART</b> активен до <b>{valid_until_dt}</b>.\n\n"
-                "Теперь в этом демо-боте вы можете:\n"
-                "• привязать свободное кафе;\n"
-                "• протестировать заказы и бронирования;\n"
-                "• показать владельцу, как работает Cafebotify.\n\n"
-                "Если появятся вопросы — просто ответьте на это сообщение."
             )
 
         await demo_bot.send_message(tgid_int, demo_text, parse_mode="HTML")
