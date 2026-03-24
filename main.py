@@ -779,6 +779,19 @@ def create_pick_menu_item_keyboard() -> ReplyKeyboardMarkup:
 
 
 # ---- Хендлер: кнопка «🍽 Меню клиента» ----
+@router.message(F.text == BTN_CLIENT_MENU)
+async def open_client_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await sync_menu_from_redis()
+
+    await message.answer(
+        "🍽 <b>Меню клиента</b>\n\n"
+        "Выберите напиток из списка ниже, чтобы добавить его в корзину.\n"
+        "Когда будете готовы — перейдите в корзину, чтобы оформить заказ.",
+        reply_markup=create_client_menu_keyboard(),  # клавиатура с напитками, корзиной и «🏠 Главное меню»
+    )
+
+
 @router.message(F.text == BTN_OWNER_MENU)
 async def open_owner_menu(message: Message, state: FSMContext):
     await state.clear()
@@ -1514,18 +1527,6 @@ async def cart_edit_action(message: Message, state: FSMContext):
 
 
 # ---- Хендлер: кнопка «🍽 Меню клиента» ----
-@router.message(F.text == BTN_CLIENT_MENU)
-async def open_client_menu(message: Message, state: FSMContext):
-    await state.clear()
-    await sync_menu_from_redis()
-
-    await message.answer(
-        "🍽 <b>Меню клиента</b>\n\n"
-        "Выберите напиток из списка ниже, чтобы добавить его в корзину.\n"
-        "Когда будете готовы — перейдите в корзину, чтобы оформить заказ.",
-        reply_markup=create_client_menu_keyboard(),  # клавиатура с напитками, корзиной и «🏠 Главное меню»
-    )
-
 
 # ---------------- Add item: drink -> quantity ----------------
 async def _start_add_item(message: Message, state: FSMContext, drink: str):
