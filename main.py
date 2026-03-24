@@ -1743,18 +1743,6 @@ async def booking_finish(message: Message, state: FSMContext):
 
 
 @router.message(F.from_user.id == ADMIN_ID)
-async def admin_reply_debug(message: Message):
-    logger.info(f"🔍 ADMIN DEBUG: text='{message.text[:50]}' has_reply={message.reply_to_message is not None}")
-    
-    if message.reply_to_message:
-        logger.info(f"🔍 REPLIED: bot={message.reply_to_message.from_user.is_bot} text='{message.reply_to_message.text[:100]}'")
-        if "Новая оплата" in (message.reply_to_message.text or ""):
-            logger.info("🔍 PAYMENT NOTIFICATION FOUND!")
-    
-    await message.answer("DEBUG: получил reply")  # ← ТОСТ для теста
-
-
-@router.message(F.from_user.id == ADMIN_ID)
 async def admin_reply_to_client(message: Message):
     logger.info(f"ADMIN REPLY DEBUG: has_reply={message.reply_to_message is not None}")
     
@@ -2324,23 +2312,30 @@ async def yookassa_webhook(request: web.Request):
             f"payment_id={payment_id}"
         )
 
-    # 2) ДОБАВЛЯЕМ уведомление в текущий demo-бот (тот же чат, где жали «Оплатить»)
+        # ── Уведомление клиенту прямо в этом же боте ──
     demo_bot: Bot = request.app["bot"]
-
     try:
-        demo_text = (
-            "🎉 <b>Оплата прошла!</b>\n\n"
-            f"Тариф <b>CafebotifySTART</b> активен до <b>{valid_until_dt}</b>.\n\n"
-            "Теперь в этом демо-боте вы можете:\n"
-            "• привязать свободное кафе;\n"
-            "• протестировать заказы и бронирования;\n"
-            "• показать владельцу, как работает Cafebotify.\n\n"
-            "Если появятся вопросы — просто ответьте на это сообщение."
-        )
-        await demo_bot.send_message(tgid_int, demo_text, parse_mode="HTML")
+        if cafe_id:
+            user_text = (
+                "✅ <b>Оплата прошла успешно!</b>\n\n"
+                f"Тариф <b>CafebotifySTART</b> активирован на <b>{tariff_title}</b>.\n"
+                f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
+                "Подписка кафе обновлена. Добро пожаловать! ☕"
+            )
+        else:
+            user_text = (
+                "✅ <b>Оплата прошла успешно!</b>\n\n"
+                f"Тариф <b>CafebotifySTART</b> активирован на <b>{tariff_title}</b>.\n"
+                f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
+                "Следующий шаг — привязка кафе администратором.\n"
+                "Если есть вопросы — напишите нам!"
+            )
+        await demo_bot.send_message(tgid_int, user_text, parse_mode="HTML")
+        logger.info(f"User notified tgid={tgid_int} payment_id={payment_id}")
     except Exception:
         logger.exception(
-            f"yookassa_webhook demo user notify error payment_id={payment_id} tgid={tgid}"
+            f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}"
         )
 
     return web.json_response({"status": "ok"})
