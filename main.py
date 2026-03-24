@@ -2347,7 +2347,7 @@ async def yookassa_webhook(request: web.Request):
         logger.error(f"yookassa_webhook draft redis error: {e}")
         return web.json_response({"status": "redis_error"})
 
-     cafe_text = (
+    cafe_text = (
         f"<code>{html.quote(str(cafe_id))}</code>"
         if cafe_id else
         "<b>не привязан</b>"
