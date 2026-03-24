@@ -1846,16 +1846,16 @@ async def admin_reply_to_client(message: Message):
         await message.answer("❌ Ошибка отправки")
 
 
-@router.callback_query(F.data.startswith("paylinks:"))
+@router.callback_query(F.data.startswith("paylinks"))
 async def paylinks_send_to_client(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id != ADMIN_ID and callback.from_user.id != SUPERADMIN_ID:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    await callback.answer("Обрабатываю...")
+    await callback.answer("Готовлю ссылки...")
 
-    raw_data = callback.data or ""
-    draft_id = raw_data.split(":", 1)[1].strip() if ":" in raw_data else ""
+    rawdata = callback.data or ""
+    draft_id = rawdata.split(":", 1)[1].strip() if ":" in rawdata else ""
     if not draft_id:
         await callback.answer("Draft ID не найден", show_alert=True)
         return
@@ -1865,159 +1865,82 @@ async def paylinks_send_to_client(callback: CallbackQuery):
         raw = await r.get(_pay_draft_key(draft_id))
         if not raw:
             await r.aclose()
-            await callback.answer("Черновик не найден или истёк", show_alert=True)
+            await callback.answer("Черновик оплаты не найден (возможно, истёк).", show_alert=True)
             return
 
         payload = json.loads(raw)
         tgid = payload.get("tgid")
         cafe_id = payload.get("cafe_id")
         valid_until = int(payload.get("valid_until") or 0)
-        payment_id = payload.get("payment_id") or ""
         product = payload.get("product") or "cafebotify_start_month"
         amount_value = payload.get("amount_value") or ""
         amount_currency = payload.get("amount_currency") or ""
-
-        if not tgid:
-            await r.aclose()
-            await callback.answer("Не найден Telegram ID клиента", show_alert=True)
-            return
-
-        try:
-            tgid_int = int(tgid)
-        except (TypeError, ValueError):
-            await r.aclose()
-            await callback.answer("Некорректный Telegram ID", show_alert=True)
-            return
-
-        is_new_payment = not bool(cafe_id)
-
-        if is_new_payment:
-            free_cafe_id = await find_free_cafe_id(r)
-            if not free_cafe_id:
-                await r.aclose()
-                await callback.answer("Нет свободных кафе для привязки", show_alert=True)
-                return
-
-            cafe_id = free_cafe_id
-
-            await r.hset(
-                k_cafe_profile(cafe_id),
-                mapping={
-                    "admin_id": str(tgid_int),
-                },
-            )
-
-            await r.hset(
-                k_admin_subscription(cafe_id),
-                mapping={
-                    "cafebotify_valid_until": str(valid_until),
-                    "cafebotify_paid": "1",
-                    "admin_id": str(tgid_int),
-                    "last_payment_id": str(payment_id),
-                    "last_product": str(product),
-                    "last_amount_value": str(amount_value),
-                    "last_amount_currency": str(amount_currency),
-                    "last_paid_at": str(int(time.time())),
-                },
-            )
-
-            payload["cafe_id"] = cafe_id
-            payload["status"] = "links_sent"
-
-            await r.setex(
-                _pay_draft_key(draft_id),
-                7 * 86400,
-                json.dumps(payload, ensure_ascii=False),
-            )
-
         await r.aclose()
-    except Exception:
-        logger.exception(f"paylinks redis/assign error draft_id={draft_id}")
-        await callback.answer("Ошибка привязки кафе", show_alert=True)
+    except Exception as e:
+        logger.exception(f"paylinks redis error draft_id={draft_id}")
+        await callback.answer(f"Ошибка Redis: {e}", show_alert=True)
         return
 
-    text = (
-        "✅ <b>Ваше кафе подключено</b>\n\n"
-        f"Код кафе: <code>{html.quote(str(cafe_id))}</code>\n\n"
-        f"{build_links_text(str(cafe_id))}"
+    if not tgid:
+        await callback.answer("Telegram ID в черновике не найден.", show_alert=True)
+        return
+
+    try:
+        tgid_int = int(tgid)
+    except (TypeError, ValueError):
+        await callback.answer("Некорректный Telegram ID.", show_alert=True)
+        return
+
+    # Текст для клиента
+    valid_until_dt = datetime.fromtimestamp(valid_until, tz=MSK_TZ).strftime("%d.%m.%Y") if valid_until > 0 else "-"
+    tariff_title = "360 дней" if product == "cafebotify_start_year" else "30 дней"
+
+    links_text = build_links_text(str(cafe_id)) if cafe_id else ""
+    user_text = (
+        "✅ <b>Оплата прошла успешно</b>\n\n"
+        f"Кафе: <code>{html.quote(str(cafe_id or '-'))}</code>\n"
+        f"Тариф: <b>{tariff_title}</b>\n"
+        f"Сумма: <b>{html.quote(str(amount_value or '-'))} {html.quote(str(amount_currency or 'RUB'))}</b>\n"
+        f"Доступ до: <b>{valid_until_dt}</b>\n\n"
+        f"{links_text}"
     )
 
+    # Пытаемся отправить от текущего бота (DEMO)
     sent_ok = False
-    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
-
-    if client_token:
-        client_bot = Bot(token=client_token)
-        try:
-            await client_bot.send_message(
-                tgid_int,
-                text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-            sent_ok = True
-        except Exception:
-            logger.exception(
-                f"paylinks send via client bot failed draft_id={draft_id} tgid={tgid_int}"
-            )
-        finally:
-            await client_bot.session.close()
+    try:
+        await callback.bot.send_message(
+            tgid_int,
+            user_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        sent_ok = True
+    except Exception:
+        logger.exception(f"paylinks send via current bot failed draft_id={draft_id} tgid={tgid_int}")
 
     if not sent_ok:
-        try:
-            await callback.bot.send_message(
-                tgid_int,
-                text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-            sent_ok = True
-        except Exception:
-            logger.exception(
-                f"paylinks send via demo bot failed draft_id={draft_id} tgid={tgid_int}"
-            )
+        await callback.answer("Не удалось отправить клиенту (бот не в чате / заблокирован).", show_alert=True)
+    else:
+        await callback.answer("Ссылки отправлены клиенту.", show_alert=False)
 
-    if not sent_ok:
-        await callback.answer("Не удалось отправить сообщение клиенту", show_alert=True)
-        return
-
+    # В любом случае даём текст суперадмину для пересылки
     try:
-        if callback.message:
-            await callback.message.edit_reply_markup(
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="✅ Ссылки отправлены",
-                                callback_data=f"paylinks_done:{draft_id}",
-                            )
-                        ]
-                    ]
-                )
-            )
+        await callback.message.reply(
+            f"Для пересылки клиенту (TG ID: <code>{tgid_int}</code>):\n\n{user_text}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
     except Exception:
-        logger.exception(f"paylinks edit markup failed draft_id={draft_id}")
+        logger.exception(f"paylinks admin reply failed draft_id={draft_id}")
 
-    try:
-        if callback.message:
-            await callback.message.reply(
-                f"✅ Ссылки отправлены клиенту <code>{tgid_int}</code> для кафе <code>{html.quote(str(cafe_id))}</code>",
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        logger.exception(f"paylinks confirmation reply failed draft_id={draft_id}")
-
+    # Обновляем статус черновика
     try:
         r = await get_redis_client()
-        payload_raw = await r.get(_pay_draft_key(draft_id))
-        if payload_raw:
-            payload = json.loads(payload_raw)
+        raw = await r.get(_pay_draft_key(draft_id))
+        if raw:
+            payload = json.loads(raw)
             payload["status"] = "links_sent"
-            await r.setex(
-                _pay_draft_key(draft_id),
-                7 * 86400,
-                json.dumps(payload, ensure_ascii=False),
-            )
+            await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
         await r.aclose()
     except Exception:
         logger.exception(f"paylinks final draft update failed draft_id={draft_id}")
