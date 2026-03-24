@@ -2201,45 +2201,34 @@ async def yookassa_webhook(request: web.Request):
         return web.json_response({"status": "redis_error"})
 
     cafe_text = (
-        f"<code>{html.quote(str(cafe_id))}</code>"
-        if cafe_id else
-        "<b>не привязан</b>"
+    f"<code>{html.quote(str(cafe_id))}</code>"
+    if cafe_id else
+    "<b>не привязан</b>"
     )
 
-    preview = (
-        "🧾 <b>Черновик уведомления</b>\n\n"
-        f"tgid: <code>{tgid_int}</code>\n"
-        f"cafe_id: {cafe_text}\n"
-        f"Draft ID: <code>{draft_id}</code>"
-    )
+    profile_link = f'<a href="tg://user?id={tgid_int}">👤 профиль</a>'
 
     admin_tail = (
-    "Подписка сразу привязана к кафе и обновлена в Redis."
-    if cafe_id else
-    "Первая оплата принята. Привязка кафе выполняется позже супер-админом."
+        "Подписка сразу привязана к кафе и обновлена в Redis."
+        if cafe_id else
+        "Первая оплата принята. Привязка кафе выполняется позже супер-админом."
     )
 
     admin_text = (
         "💳 <b>Новая успешная оплата CafebotifySTART</b>\n\n"
-        f"• tgid: <code>{tgid_int}</code>\n"
-        f"• payment_id: <code>{html.quote(str(payment_id or '-'))}</code>\n"
-        f"• тариф: <b>{tariff_title}</b>\n"
-        f"• сумма: <b>{html.quote(str(amount_value or '-'))} {html.quote(str(amount_currency or ''))}</b>\n"
-        f"• cafe_id: {cafe_text}\n"
-        f"• действует до: <b>{valid_until_dt}</b>\n"
-        f"• Draft ID: <code>{draft_id}</code>\n\n"
+        f"Кафе: {cafe_text}\n"
+        f"👤 <code>{tgid_int}</code> ({profile_link})\n"
+        f"Тариф: <b>{tariff_title}</b>\n"
+        f"Сумма: <b>{html.quote(str(amount_value or '-'))} {html.quote(str(amount_currency or ''))}</b>\n"
+        f"Подписка до: <b>{valid_until_dt}</b>\n"
+        f"payment_id: <code>{html.quote(str(payment_id or '-'))}</code>\n"
+        f"Draft ID: <code>{draft_id}</code>\n\n"
         f"{admin_tail}"
     )
 
-    demo_bot = request.app["bot"]
+    demo_bot: Bot = request.app["bot"]
 
     try:
-        await demo_bot.send_message(
-            ADMIN_ID,
-            preview,
-            disable_web_page_preview=True,
-            parse_mode="HTML",
-        )
         await demo_bot.send_message(
             ADMIN_ID,
             admin_text,
@@ -2247,7 +2236,9 @@ async def yookassa_webhook(request: web.Request):
             parse_mode="HTML",
         )
     except Exception:
-        logger.exception(f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}")
+        logger.exception(
+            f"yookassa_webhook admin notify error payment_id={payment_id} tgid={tgid}"
+        )
 
     if cafe_id:
         try:
@@ -2329,7 +2320,6 @@ async def yookassa_webhook(request: web.Request):
                 f"Тариф <b>CafebotifySTART</b> активирован на <b>{tariff_title}</b>.\n"
                 f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
                 "Следующий шаг — привязка кафе администратором.\n"
-                "Если есть вопросы — напишите нам!"
             )
         await demo_bot.send_message(tgid_int, user_text, parse_mode="HTML")
         logger.info(f"User notified tgid={tgid_int} payment_id={payment_id}")
