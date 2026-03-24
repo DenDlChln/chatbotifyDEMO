@@ -235,6 +235,26 @@ async def get_effective_admin_id(r: redis.Redis, cafe_id: str) -> int:
     return ADMIN_ID
 
 
+async def find_free_cafe_id(r: redis.Redis) -> Optional[str]:
+    keys = await r.keys("cafe:*:profile")
+    for key in keys:
+        try:
+            parts = key.split(":")
+            if len(parts) < 3:
+                continue
+
+            cafe_id = parts[1]
+            admin_id_raw = await r.hget(key, "admin_id")
+            if admin_id_raw and str(admin_id_raw).strip() not in ("", "0"):
+                continue
+
+            return cafe_id
+        except Exception:
+            continue
+
+    return None
+
+
 async def get_bound_active_cafe_id_by_admin(r: redis.Redis, admin_tg_id: int) -> Optional[str]:
     keys = await r.keys("cafe:*:profile")
     for key in keys:
@@ -1828,6 +1848,8 @@ async def paylinks_send_to_client(callback: CallbackQuery):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
+    await callback.answer("Обрабатываю...")
+
     raw_data = callback.data or ""
     draft_id = raw_data.split(":", 1)[1].strip() if ":" in raw_data else ""
     if not draft_id:
@@ -1837,37 +1859,77 @@ async def paylinks_send_to_client(callback: CallbackQuery):
     try:
         r = await get_redis_client()
         raw = await r.get(_pay_draft_key(draft_id))
+        if not raw:
+            await r.aclose()
+            await callback.answer("Черновик не найден или истёк", show_alert=True)
+            return
+
+        payload = json.loads(raw)
+        tgid = payload.get("tgid")
+        cafe_id = payload.get("cafe_id")
+        valid_until = int(payload.get("valid_until") or 0)
+        payment_id = payload.get("payment_id") or ""
+        product = payload.get("product") or "cafebotify_start_month"
+        amount_value = payload.get("amount_value") or ""
+        amount_currency = payload.get("amount_currency") or ""
+
+        if not tgid:
+            await r.aclose()
+            await callback.answer("Не найден Telegram ID клиента", show_alert=True)
+            return
+
+        try:
+            tgid_int = int(tgid)
+        except (TypeError, ValueError):
+            await r.aclose()
+            await callback.answer("Некорректный Telegram ID", show_alert=True)
+            return
+
+        is_new_payment = not bool(cafe_id)
+
+        if is_new_payment:
+            free_cafe_id = await find_free_cafe_id(r)
+            if not free_cafe_id:
+                await r.aclose()
+                await callback.answer("Нет свободных кафе для привязки", show_alert=True)
+                return
+
+            cafe_id = free_cafe_id
+
+            await r.hset(
+                k_cafe_profile(cafe_id),
+                mapping={
+                    "admin_id": str(tgid_int),
+                },
+            )
+
+            await r.hset(
+                k_admin_subscription(cafe_id),
+                mapping={
+                    "cafebotify_valid_until": str(valid_until),
+                    "cafebotify_paid": "1",
+                    "admin_id": str(tgid_int),
+                    "last_payment_id": str(payment_id),
+                    "last_product": str(product),
+                    "last_amount_value": str(amount_value),
+                    "last_amount_currency": str(amount_currency),
+                    "last_paid_at": str(int(time.time())),
+                },
+            )
+
+            payload["cafe_id"] = cafe_id
+            payload["status"] = "links_sent"
+
+            await r.setex(
+                _pay_draft_key(draft_id),
+                7 * 86400,
+                json.dumps(payload, ensure_ascii=False),
+            )
+
         await r.aclose()
     except Exception:
-        logger.exception(f"paylinks redis read error draft_id={draft_id}")
-        await callback.answer("Ошибка чтения Redis", show_alert=True)
-        return
-
-    if not raw:
-        await callback.answer("Черновик не найден или истёк", show_alert=True)
-        return
-
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        await callback.answer("Повреждённые данные draft", show_alert=True)
-        return
-
-    tgid = payload.get("tgid")
-    cafe_id = payload.get("cafe_id")
-
-    if not tgid:
-        await callback.answer("Не найден Telegram ID клиента", show_alert=True)
-        return
-
-    if not cafe_id:
-        await callback.answer("У клиента пока нет привязанного кафе", show_alert=True)
-        return
-
-    try:
-        tgid_int = int(tgid)
-    except (TypeError, ValueError):
-        await callback.answer("Некорректный Telegram ID", show_alert=True)
+        logger.exception(f"paylinks redis/assign error draft_id={draft_id}")
+        await callback.answer("Ошибка привязки кафе", show_alert=True)
         return
 
     text = (
@@ -1941,7 +2003,20 @@ async def paylinks_send_to_client(callback: CallbackQuery):
     except Exception:
         logger.exception(f"paylinks confirmation reply failed draft_id={draft_id}")
 
-    await callback.answer("Ссылки отправлены клиенту")
+    try:
+        r = await get_redis_client()
+        payload_raw = await r.get(_pay_draft_key(draft_id))
+        if payload_raw:
+            payload = json.loads(payload_raw)
+            payload["status"] = "links_sent"
+            await r.setex(
+                _pay_draft_key(draft_id),
+                7 * 86400,
+                json.dumps(payload, ensure_ascii=False),
+            )
+        await r.aclose()
+    except Exception:
+        logger.exception(f"paylinks final draft update failed draft_id={draft_id}")
 
 
 # ---------------- Cafebotify subscriptions helpers ----------------
@@ -2400,7 +2475,7 @@ async def yookassa_webhook(request: web.Request):
     )
 
     admin_kb = None
-    if is_new_payment_without_cafe:
+    if not cafe_id:
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
