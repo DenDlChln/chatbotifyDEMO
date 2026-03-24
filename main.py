@@ -2292,6 +2292,7 @@ async def yookassa_webhook(request: web.Request):
     if client_token:
         client_bot = Bot(token=client_token)
         try:
+            # Текущее уведомление в клиентский бот (оставляем как есть)
             if cafe_id:
                 user_text = (
                     "✅ <b>Оплата прошла успешно</b>\n\n"
@@ -2309,12 +2310,30 @@ async def yookassa_webhook(request: web.Request):
                 )
 
             await client_bot.send_message(tgid_int, user_text, parse_mode="HTML")
+
+            # ДОПОЛНИТЕЛЬНО: уведомление прямо в demo‑боте
+            demo_text = (
+                "🎉 <b>Тариф CafebotifySTART оплачен</b>\n\n"
+                f"Доступ активен до <b>{valid_until_dt}</b>.\n\n"
+                "Теперь в этом демо‑боте вы можете:\n"
+                "• привязать свободное кафе;\n"
+                "• протестировать заказы и бронирования;\n"
+                "• показать владельцу, как работает Cafebotify.\n\n"
+                "Если что-то пойдёт не так — просто напишите в ответ на это сообщение."
+            )
+            await client_bot.send_message(tgid_int, demo_text, parse_mode="HTML")
+
         except Exception:
-            logger.exception(f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}")
+            logger.exception(
+                f"yookassa_webhook user notify error payment_id={payment_id} tgid={tgid}"
+            )
         finally:
             await client_bot.session.close()
     else:
-        logger.error(f"CLIENT_BOT_TOKEN not set; cannot notify user tgid={tgid_int}, payment_id={payment_id}")
+        logger.error(
+            f"CLIENT_BOT_TOKEN not set; cannot notify user tgid={tgid_int}, "
+            f"payment_id={payment_id}"
+        )
 
     return web.json_response({"status": "ok"})
 
