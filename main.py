@@ -1044,6 +1044,23 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
+@router.message(Command("pingtest"))
+async def pingtest(message: Message):
+    await message.answer("PINGTEST_OK")
+
+
+@router.message(Command("webhookinfo"))
+async def webhookinfo(message: Message):
+    info = await message.bot.get_webhook_info()
+    await message.answer(
+        f"url: <code>{html.quote(info.url or '-')}</code>\n"
+        f"pending: <code>{info.pending_update_count}</code>\n"
+        f"last_error_date: <code>{html.quote(str(info.last_error_date))}</code>\n"
+        f"last_error_message: <code>{html.quote(str(info.last_error_message))}</code>",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("myid"))
 async def myid_cmd(message: Message):
     user_id = message.from_user.id
