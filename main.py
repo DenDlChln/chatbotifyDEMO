@@ -2288,22 +2288,14 @@ async def yookassa_webhook(request: web.Request):
     except (TypeError, ValueError):
         return web.json_response({"status": "bad_tgid"})
 
-    requested_cafe_id = (str(cafe_id).strip() if cafe_id else "") or None
-    resolved_cafe_id = requested_cafe_id
+    requested_cafe_id = str(cafe_id).strip() if cafe_id else ""
+    cafe_id = requested_cafe_id or None
 
-    if not resolved_cafe_id:
-        try:
-            r = await get_redis_client()
-            resolved_cafe_id = await get_bound_active_cafe_id_by_admin(r, tgid_int)
-            await r.aclose()
-        except Exception:
-            logger.exception(
-                f"yookassa_webhook resolve active cafe by tgid failed "
-                f"payment_id={payment_id} tgid={tgid_int}"
-            )
-
-    cafe_id = resolved_cafe_id
-    is_new_payment_without_cafe = not bool(cafe_id)
+    # Важно:
+    # если cafe_id не пришёл в metadata, считаем это новой оплатой
+    # без привязки к конкретному кафе и НЕ пытаемся автоматически
+    # восстановить старое кафе по Telegram ID.
+    is_new_payment_without_cafe = cafe_id is None
 
     now_ts = int(time.time())
     product = metadata.get("product") or "cafebotify_start_month"
@@ -2315,11 +2307,13 @@ async def yookassa_webhook(request: web.Request):
         sub_key = k_admin_subscription(cafe_id)
         try:
             r = await get_redis_client()
-            raw_until = await r.hget(sub_key, "cafebotify_valid_until")
-            await r.aclose()
-            current_until = int(raw_until) if raw_until else 0
-            if current_until > now_ts:
-                base_ts = current_until
+            try:
+                raw_until = await r.hget(sub_key, "cafebotify_valid_until")
+                current_until = int(raw_until) if raw_until else 0
+                if current_until > now_ts:
+                    base_ts = current_until
+            finally:
+                await r.aclose()
         except Exception:
             logger.exception(
                 f"yookassa_webhook read current cafe subscription failed "
@@ -2332,21 +2326,23 @@ async def yookassa_webhook(request: web.Request):
     if cafe_id:
         try:
             r = await get_redis_client()
-            eff_admin = await get_effective_admin_id(r, cafe_id)
-            await r.hset(
-                k_admin_subscription(cafe_id),
-                mapping={
-                    "cafebotify_valid_until": str(valid_until),
-                    "cafebotify_paid": "1",
-                    "admin_id": str(eff_admin or 0),
-                    "last_payment_id": str(payment_id or ""),
-                    "last_product": str(product),
-                    "last_amount_value": str(amount_value or ""),
-                    "last_amount_currency": str(amount_currency or ""),
-                    "last_paid_at": str(now_ts),
-                },
-            )
-            await r.aclose()
+            try:
+                eff_admin = await get_effective_admin_id(r, cafe_id)
+                await r.hset(
+                    k_admin_subscription(cafe_id),
+                    mapping={
+                        "cafebotify_valid_until": str(valid_until),
+                        "cafebotify_paid": "1",
+                        "admin_id": str(eff_admin or 0),
+                        "last_payment_id": str(payment_id or ""),
+                        "last_product": str(product),
+                        "last_amount_value": str(amount_value or ""),
+                        "last_amount_currency": str(amount_currency or ""),
+                        "last_paid_at": str(now_ts),
+                    },
+                )
+            finally:
+                await r.aclose()
         except Exception:
             logger.exception(
                 f"yookassa_webhook failed to update cafe subscription "
@@ -2429,41 +2425,32 @@ async def yookassa_webhook(request: web.Request):
             f"yookassa_webhook superadmin notify error payment_id={payment_id} tgid={tgid}"
         )
 
-    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
-    if client_token:
+    client_token = os.getenv("CLIENT_BOT_TOKEN", "").strip()
+    if client_token and cafe_id:
         client_bot = Bot(token=client_token)
         try:
-            if cafe_id:
-                user_text = (
-                    "✅ <b>Оплата прошла успешно</b>\n\n"
-                    f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
-                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
-                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
-                    "Подписка кафе обновлена."
-                )
-            else:
-                user_text = (
-                    "✅ <b>Оплата прошла успешно</b>\n\n"
-                    f"Тариф CafebotifySTART активирован на <b>{tariff_title}</b>.\n"
-                    f"Срок действия: до <b>{valid_until_dt}</b>.\n\n"
-                    "Следующий шаг — привязка свободного кафе администратором."
-                )
-
+            user_text = (
+                "✅ <b>Оплата прошла успешно!</b>\n\n"
+                f"Кафе: <code>{html.quote(str(cafe_id))}</code>\n"
+                f"Подписка CafebotifySTART на <b>{tariff_title}</b>\n"
+                f"активна до <b>{valid_until_dt}</b>."
+            )
             await client_bot.send_message(
                 tgid_int,
                 user_text,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-            )
+                )
         except Exception:
             logger.exception(
-                f"yookassa_webhook client bot notify error payment_id={payment_id} tgid={tgid}"
+                f"yookassa_webhook client bot notify error "
+                f"payment_id={payment_id} tgid={tgid_int}"
             )
         finally:
             await client_bot.session.close()
-    else:
+    elif not client_token:
         logger.info(
-            f"CLIENT_BOT_TOKEN not set; skip client bot notify "
+            f"CLIENT_BOT_TOKEN not set, skip client bot notify "
             f"tgid={tgid_int} payment_id={payment_id}"
         )
 
