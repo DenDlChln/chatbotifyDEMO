@@ -1860,53 +1860,50 @@ async def admin_reply_to_client(message: Message):
 async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
     logger.info(f"PAYLINKS DEBUG 1 callback data={callback.data!r} from={callback.from_user.id}")
 
-    if callback.from_user.id != ADMIN_ID and callback.from_user.id != SUPERADMIN_ID:
+    if callback.from_user.id not in {ADMIN_ID, SUPERADMIN_ID}:
         await callback.answer("Нет доступа.", show_alert=True)
         return
 
     raw_data = callback.data or ""
     draft_id = raw_data.split(":", 1)[1].strip() if ":" in raw_data else ""
     if not draft_id:
-        logger.info("PAYLINKS DEBUG 1A empty draft_id")
         await callback.answer("Draft ID не распознан.", show_alert=True)
         return
-
-    logger.info(f"PAYLINKS DEBUG 2 draft_id={draft_id}")
-    await callback.answer()
 
     try:
         r = await get_redis_client()
         raw = await r.get(_pay_draft_key(draft_id))
         await r.aclose()
     except Exception as e:
-        logger.exception(f"PAYLINKS DEBUG 2A redis error draft_id={draft_id}")
+        await callback.answer("Redis error", show_alert=True)
         await callback.message.answer(f"❌ Redis ошибка: {e}")
         return
 
     if not raw:
-        logger.info(f"PAYLINKS DEBUG 2B draft not found draft_id={draft_id}")
+        await callback.answer("Драфт не найден", show_alert=True)
         await callback.message.answer("❌ Драфт не найден или истёк.")
         return
 
     try:
         payload = json.loads(raw)
     except Exception:
-        logger.info(f"PAYLINKS DEBUG 2C bad json draft_id={draft_id}")
+        await callback.answer("Ошибка драфта", show_alert=True)
         await callback.message.answer("❌ Некорректный формат драфта.")
         return
 
     if not payload.get("tgid"):
-        logger.info(f"PAYLINKS DEBUG 2D no tgid draft_id={draft_id}")
+        await callback.answer("Нет Telegram ID", show_alert=True)
         await callback.message.answer("❌ В драфте нет Telegram ID клиента.")
         return
 
+    await state.clear()
     await state.set_state(PaylinksStates.waiting_for_cafe_id)
     await state.update_data(draft_id=draft_id)
 
-    logger.info(f"PAYLINKS DEBUG 3 state=waiting_for_cafe_id draft_id={draft_id}")
-
+    await callback.answer("Ок")
     await callback.message.answer(
-        "Укажи код кафе для этой оплаты.\n"
+        "✅ Кнопка сработала.\n\n"
+        "Теперь пришли код кафе для этой оплаты.\n"
         "Например: <code>cafe_023</code> или просто <code>23</code>."
     )
 
