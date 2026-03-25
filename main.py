@@ -1450,7 +1450,7 @@ async def edit_cart(message: Message, state: FSMContext):
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
-@router.message(F.from_user.id == ADMIN_ID)
+@router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_write_to_payer(message: Message):
     if not (text := message.text) or not text.startswith("[Ответ] tgid:"):
         return  # не ответ плательщику
@@ -1805,7 +1805,7 @@ async def booking_finish(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(F.from_user.id == ADMIN_ID)
+@router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_reply_to_client(message: Message):
     logger.info(f"ADMIN REPLY DEBUG: has_reply={message.reply_to_message is not None}")
     
