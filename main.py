@@ -1452,30 +1452,38 @@ async def edit_cart(message: Message, state: FSMContext):
 
 @router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_write_to_payer(message: Message):
+    logger.info(f"ADMIN CATCHER 1 text={message.text!r}")
+
     if not (text := message.text) or not text.startswith("[Ответ] tgid:"):
-        return  # не ответ плательщику
-    
-    # Парсим tgid из текста
+        return
+
     tgid_match = re.search(r"tgid:(\d+)", text)
     if not tgid_match:
+        logger.info("ADMIN CATCHER 1 no tgid found")
         return
-    
+
     tgid_int = int(tgid_match.group(1))
-    
-    # Отправляем плательщику
+    logger.info(f"ADMIN CATCHER 1 parsed tgid={tgid_int}")
+
     client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
     if client_token:
         client_bot = Bot(token=client_token)
         try:
+            payload_text = text.replace(f"[Ответ] tgid:{tgid_int}", "", 1).strip()
+            if not payload_text:
+                payload_text = text.replace("[Ответ] tgid:", "", 1).strip()
+
             await client_bot.send_message(
                 tgid_int,
-                f"💬 <b>Ответ от поддержки:</b>\n\n{html.quote(text.replace('[Ответ] tgid:', '').strip())}",
-                parse_mode="HTML"
+                f"💬 <b>Ответ от поддержки:</b>\n\n{html.quote(payload_text)}",
+                parse_mode="HTML",
             )
             await message.answer(f"✅ Отправлено плательщику <code>{tgid_int}</code>")
+            logger.info(f"ADMIN CATCHER 1 sent to tgid={tgid_int}")
         finally:
             await client_bot.session.close()
     else:
+        logger.info("ADMIN CATCHER 1 CLIENT_BOT_TOKEN missing")
         await message.answer("❌ CLIENT_BOT_TOKEN не задан.")
 
 
@@ -1807,52 +1815,51 @@ async def booking_finish(message: Message, state: FSMContext):
 
 @router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
 async def admin_reply_to_client(message: Message):
-    logger.info(f"ADMIN REPLY DEBUG: has_reply={message.reply_to_message is not None}")
-    
-    # 1. Проверяем reply на сообщение БОТА
+    logger.info(
+        f"ADMIN CATCHER 2 text={message.text!r} reply={message.reply_to_message is not None}"
+    )
+
     if not message.reply_to_message:
-        logger.info("No reply_to_message")
+        logger.info("ADMIN CATCHER 2 no reply_to_message")
         return
-    
-    if not message.reply_to_message.from_user.is_bot:
-        logger.info("Reply not to bot")
+
+    if not message.reply_to_message.from_user or not message.reply_to_message.from_user.is_bot:
+        logger.info("ADMIN CATCHER 2 reply is not to bot")
         return
-    
-    # 2. Проверяем уведомление об оплате
+
     replied_text = message.reply_to_message.text or ""
-    logger.info(f"Replied text preview: {replied_text[:100]}")
-    
-    if "Новая оплата" not in replied_text and "CafebotifySTART" not in replied_text:
-        logger.info("Not payment notification")
+    logger.info(f"ADMIN CATCHER 2 replied text preview: {replied_text[:150]!r}")
+
+    if "Новая успешная оплата CafebotifySTART" not in replied_text and "CafebotifySTART" not in replied_text:
+        logger.info("ADMIN CATCHER 2 not payment notification")
         return
-    
-    # 3. Извлекаем tgid КЛИЕНТА из текста уведомления
-    import re
+
     tgid_match = re.search(r"<code>(\d+)</code>", replied_text)
     if not tgid_match:
-        logger.error("No tgid in notification")
+        logger.error("ADMIN CATCHER 2 no tgid in notification")
         await message.answer("❌ Не найден ID клиента")
         return
-    
+
     client_id = int(tgid_match.group(1))
-    logger.info(f"Found client_id: {client_id}")
-    
-    # 4. ОТПРАВЛЯЕМ КЛИЕНТУ ОТ БОТА
+    logger.info(f"ADMIN CATCHER 2 found client_id={client_id}")
+
     try:
         await message.bot.send_message(
             client_id,
             f"💬 <b>Ответ от поддержки Cafebotify:</b>\n\n{html.quote(message.text or '')}",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
         await message.answer(f"✅ Отправлено клиенту <code>{client_id}</code>")
-        logger.info(f"Message sent to client {client_id}")
+        logger.info(f"ADMIN CATCHER 2 sent to client_id={client_id}")
     except Exception as e:
-        logger.error(f"Send error: {e}")
+        logger.error(f"ADMIN CATCHER 2 send error: {e}")
         await message.answer("❌ Ошибка отправки")
-
+        
 
 @router.callback_query(F.data.startswith("paylinks:"))
 async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"PAYLINKS DEBUG 1 callback data={callback.data!r} from={callback.from_user.id}")
+
     if callback.from_user.id != ADMIN_ID and callback.from_user.id != SUPERADMIN_ID:
         await callback.answer("Нет доступа.", show_alert=True)
         return
@@ -1860,9 +1867,11 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
     raw_data = callback.data or ""
     draft_id = raw_data.split(":", 1)[1].strip() if ":" in raw_data else ""
     if not draft_id:
+        logger.info("PAYLINKS DEBUG 1A empty draft_id")
         await callback.answer("Draft ID не распознан.", show_alert=True)
         return
 
+    logger.info(f"PAYLINKS DEBUG 2 draft_id={draft_id}")
     await callback.answer()
 
     try:
@@ -1870,26 +1879,31 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         raw = await r.get(_pay_draft_key(draft_id))
         await r.aclose()
     except Exception as e:
-        logger.exception(f"paylinks redis error draft_id={draft_id}")
+        logger.exception(f"PAYLINKS DEBUG 2A redis error draft_id={draft_id}")
         await callback.message.answer(f"❌ Redis ошибка: {e}")
         return
 
     if not raw:
+        logger.info(f"PAYLINKS DEBUG 2B draft not found draft_id={draft_id}")
         await callback.message.answer("❌ Драфт не найден или истёк.")
         return
 
     try:
         payload = json.loads(raw)
     except Exception:
+        logger.info(f"PAYLINKS DEBUG 2C bad json draft_id={draft_id}")
         await callback.message.answer("❌ Некорректный формат драфта.")
         return
 
     if not payload.get("tgid"):
+        logger.info(f"PAYLINKS DEBUG 2D no tgid draft_id={draft_id}")
         await callback.message.answer("❌ В драфте нет Telegram ID клиента.")
         return
 
     await state.set_state(PaylinksStates.waiting_for_cafe_id)
     await state.update_data(draft_id=draft_id)
+
+    logger.info(f"PAYLINKS DEBUG 3 state=waiting_for_cafe_id draft_id={draft_id}")
 
     await callback.message.answer(
         "Укажи код кафе для этой оплаты.\n"
@@ -1899,12 +1913,18 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
 
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
 async def paylinks_cafe_id_input(message: Message, state: FSMContext):
+    logger.info(
+        f"PAYLINKS DEBUG 4 waiting_for_cafe_id text={message.text!r} from={message.from_user.id}"
+    )
+
     if message.from_user.id != ADMIN_ID and message.from_user.id != SUPERADMIN_ID:
+        logger.info("PAYLINKS DEBUG 4A no access")
         await state.clear()
         return
 
     text = (message.text or "").strip()
     if not text:
+        logger.info("PAYLINKS DEBUG 4B empty text")
         await message.answer("Введи код кафе, например cafe_023 или 23.")
         return
 
@@ -1912,13 +1932,17 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
     if not cafe_id.startswith("cafe_"):
         digits = "".join(ch for ch in cafe_id if ch.isdigit())
         if not digits:
+            logger.info(f"PAYLINKS DEBUG 4C cannot parse cafe_id from text={text!r}")
             await message.answer("Не понял код кафе. Пример: cafe_023 или 23.")
             return
         cafe_id = f"cafe_{digits.zfill(3)}"
 
+    logger.info(f"PAYLINKS DEBUG 5 normalized cafe_id={cafe_id}")
+
     data = await state.get_data()
     draft_id = data.get("draft_id")
     if not draft_id:
+        logger.info("PAYLINKS DEBUG 5A no draft_id in state")
         await state.clear()
         await message.answer("draft_id в состоянии не найден. Нажми кнопку ещё раз.")
         return
@@ -1928,6 +1952,7 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
         raw = await r.get(_pay_draft_key(draft_id))
         if not raw:
             await r.aclose()
+            logger.info(f"PAYLINKS DEBUG 5B draft expired draft_id={draft_id}")
             await state.clear()
             await message.answer("Драфт не найден или истёк. Нажми кнопку ещё раз.")
             return
@@ -1940,12 +1965,13 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
         amount_currency = payload.get("amount_currency") or ""
         await r.aclose()
     except Exception as e:
-        logger.exception(f"paylinks read redis error draft_id={draft_id}")
+        logger.exception(f"PAYLINKS DEBUG 5C redis read error draft_id={draft_id}")
         await state.clear()
         await message.answer(f"Redis ошибка при чтении драфта: {e}")
         return
 
     if not tgid:
+        logger.info(f"PAYLINKS DEBUG 5D no tgid in payload draft_id={draft_id}")
         await state.clear()
         await message.answer("В драфте нет Telegram ID клиента.")
         return
@@ -1953,11 +1979,13 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
     try:
         tgid_int = int(tgid)
     except (TypeError, ValueError):
+        logger.info(f"PAYLINKS DEBUG 5E bad tgid={tgid!r}")
         await state.clear()
         await message.answer("Некорректный Telegram ID в драфте.")
         return
 
     await state.update_data(
+        draft_id=draft_id,
         cafe_id=cafe_id,
         tgid_int=tgid_int,
         valid_until=valid_until,
@@ -1993,6 +2021,10 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
     await state.update_data(preview_text=preview_text)
     await state.set_state(PaylinksStates.waiting_for_preview_approve)
 
+    logger.info(
+        f"PAYLINKS DEBUG 6 state=waiting_for_preview_approve draft_id={draft_id} cafe_id={cafe_id} tgid={tgid_int}"
+    )
+
     await message.answer(
         "Вот предварительный текст для клиента:\n\n"
         f"{preview_text}\n\n"
@@ -2002,12 +2034,18 @@ async def paylinks_cafe_id_input(message: Message, state: FSMContext):
 
 @router.message(StateFilter(PaylinksStates.waiting_for_preview_approve))
 async def paylinks_preview_approve(message: Message, state: FSMContext):
+    logger.info(
+        f"PAYLINKS DEBUG 7 preview_approve text={message.text!r} from={message.from_user.id}"
+    )
+
     if message.from_user.id != ADMIN_ID and message.from_user.id != SUPERADMIN_ID:
+        logger.info("PAYLINKS DEBUG 7A no access")
         await state.clear()
         return
 
     text = (message.text or "").strip()
     if not text:
+        logger.info("PAYLINKS DEBUG 7B empty final text")
         await message.answer("Отправь финальный текст одним сообщением.")
         return
 
@@ -2017,6 +2055,9 @@ async def paylinks_preview_approve(message: Message, state: FSMContext):
     tgid_int = data.get("tgid_int")
 
     if not draft_id or not cafe_id or not tgid_int:
+        logger.info(
+            f"PAYLINKS DEBUG 7C missing data draft_id={draft_id} cafe_id={cafe_id} tgid_int={tgid_int}"
+        )
         await state.clear()
         await message.answer("Данные драфта потерялись. Нажми кнопку ещё раз.")
         return
@@ -2036,7 +2077,7 @@ async def paylinks_preview_approve(message: Message, state: FSMContext):
         )
         await r.aclose()
     except Exception as e:
-        logger.exception(f"paylinks update redis error draft_id={draft_id}")
+        logger.exception(f"PAYLINKS DEBUG 7D redis update error draft_id={draft_id}")
         await state.clear()
         await message.answer(f"Не смог сохранить cafe_id для драфта: {e}")
         return
@@ -2051,8 +2092,9 @@ async def paylinks_preview_approve(message: Message, state: FSMContext):
             disable_web_page_preview=True,
         )
         sent_ok = True
+        logger.info(f"PAYLINKS DEBUG 8 sent via demo bot tgid={tgid_int}")
     except Exception as e:
-        logger.exception(f"paylinks send via demo bot failed draft_id={draft_id} tgid={tgid_int}")
+        logger.exception(f"PAYLINKS DEBUG 8A send via demo bot failed draft_id={draft_id} tgid={tgid_int}")
         await message.answer(f"⚠️ Через DEMO-бота отправить не удалось: {e}")
 
     client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
@@ -2067,13 +2109,17 @@ async def paylinks_preview_approve(message: Message, state: FSMContext):
                     disable_web_page_preview=True,
                 )
                 sent_ok = True
+                logger.info(f"PAYLINKS DEBUG 9 sent via client bot tgid={tgid_int}")
             finally:
                 await client_bot.session.close()
         except Exception as e:
-            logger.exception(f"paylinks send via client bot failed draft_id={draft_id} tgid={tgid_int}")
+            logger.exception(f"PAYLINKS DEBUG 9A send via client bot failed draft_id={draft_id} tgid={tgid_int}")
             await message.answer(f"⚠️ Через CLIENT_BOT_TOKEN тоже не удалось: {e}")
+    else:
+        logger.info("PAYLINKS DEBUG 9B CLIENT_BOT_TOKEN missing")
 
     await state.clear()
+    logger.info("PAYLINKS DEBUG 10 state cleared")
 
     if not sent_ok:
         await message.answer(
