@@ -1398,6 +1398,24 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
     await message.answer("🗑 Удалено.", reply_markup=create_owner_menu_keyboard())
 
 
+@router.message(Command("testcb"))
+async def testcb(message: Message):
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="TEST CALLBACK", callback_data="test_cb_123")]
+        ]
+    )
+    await message.answer("Нажми тестовую кнопку", reply_markup=kb)
+
+
+@router.callback_query(F.data == "test_cb_123")
+async def testcb_handler(callback: CallbackQuery):
+    logger.info(f"TEST_CB_HANDLER from_user={callback.from_user.id}")
+    await callback.answer("TEST_CB_OK")
+    if callback.message:
+        await callback.message.answer("✅ test_cb handler сработал")
+
+
 # ---------------- Stats button (DEMO preview for non-admin) ----------------
 @router.message(F.text == BTN_STATS)
 async def stats_button(message: Message):
@@ -1868,24 +1886,6 @@ async def admin_reply_to_client(message: Message):
     except Exception as e:
         logger.error(f"ADMIN CATCHER 2 send error: {e}")
         await message.answer("❌ Ошибка отправки")
-
-
-@router.message(Command("testcb"))
-async def testcb(message: Message):
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="TEST CALLBACK", callback_data="test_cb_123")]
-        ]
-    )
-    await message.answer("Нажми тестовую кнопку", reply_markup=kb)
-
-
-@router.callback_query(F.data == "test_cb_123")
-async def testcb_handler(callback: CallbackQuery):
-    logger.info(f"TEST_CB_HANDLER from_user={callback.from_user.id}")
-    await callback.answer("TEST_CB_OK")
-    if callback.message:
-        await callback.message.answer("✅ test_cb handler сработал")
         
 
 @router.callback_query(F.data.startswith("paylinks:"))
