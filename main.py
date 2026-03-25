@@ -211,10 +211,7 @@ router = Router()
 
 # ---------------- Redis ----------------
 async def get_redis_client():
-    client = redis.from_url(REDIS_URL, decode_responses=True)
-    await client.ping()
-    return client
-
+    return redis.from_url(REDIS_URL, decode_responses=True)
 
 def k_admin_subscription(cafe_id: str) -> str:
     return f"cafe:{cafe_id}:admin_subscription"
@@ -1860,19 +1857,22 @@ async def admin_reply_to_client(message: Message):
 async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
     logger.info(
         f"PAYLINKS DEBUG 1 callback data={callback.data!r} "
-        f"from_user={callback.from_user.id} chat={callback.message.chat.id if callback.message else 'nochat'}"
+        f"from_user={callback.from_user.id} "
+        f"chat={callback.message.chat.id if callback.message else 'nochat'}"
     )
 
     if callback.from_user.id not in {ADMIN_ID, SUPERADMIN_ID}:
         await callback.answer("Нет доступа.", show_alert=True)
         return
 
+    await callback.answer("Открываю ввод кода кафе...")
+
     raw_data = callback.data or ""
     draft_id = raw_data.split(":", 1)[1].strip() if ":" in raw_data else ""
 
     if not draft_id:
         logger.info("PAYLINKS DEBUG 1A empty draft_id")
-        await callback.answer("Draft ID не найден", show_alert=True)
+        await callback.message.answer("❌ Draft ID не найден.")
         return
 
     try:
@@ -1881,13 +1881,11 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         await r.aclose()
     except Exception as e:
         logger.exception(f"PAYLINKS DEBUG 2A redis error draft_id={draft_id}")
-        await callback.answer("Ошибка Redis", show_alert=True)
         await callback.message.answer(f"❌ Redis error: {e}")
         return
 
     if not raw:
         logger.info(f"PAYLINKS DEBUG 2B draft not found draft_id={draft_id}")
-        await callback.answer("Черновик не найден", show_alert=True)
         await callback.message.answer("❌ Черновик не найден или уже истёк.")
         return
 
@@ -1895,13 +1893,11 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         payload = json.loads(raw)
     except Exception:
         logger.info(f"PAYLINKS DEBUG 2C bad json draft_id={draft_id}")
-        await callback.answer("Ошибка данных", show_alert=True)
         await callback.message.answer("❌ Повреждённый draft в Redis.")
         return
 
     if not payload.get("tgid"):
         logger.info(f"PAYLINKS DEBUG 2D no tgid draft_id={draft_id}")
-        await callback.answer("Нет Telegram ID", show_alert=True)
         await callback.message.answer("❌ В черновике нет Telegram ID клиента.")
         return
 
@@ -1911,11 +1907,10 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
 
     logger.info(f"PAYLINKS DEBUG 3 state=waiting_for_cafe_id draft_id={draft_id}")
 
-    await callback.answer("Принято")
     await callback.message.answer(
         "✅ Кнопка сработала.\n\n"
         "Теперь отправь код кафе.\n"
-        "Примеры:\n"
+        "Например:\n"
         "<code>cafe_023</code>\n"
         "<code>23</code>",
         parse_mode="HTML",
