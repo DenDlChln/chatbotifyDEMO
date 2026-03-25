@@ -1883,6 +1883,24 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         await callback.message.answer("✅ TEST: callback дошёл до хендлера")
 
     return
+
+
+@router.callback_query(F.data.startswith("paylinks:"))
+async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
+    try:
+        logger.info(f"PAYLINKS TEST callback data={callback.data!r} from_user={callback.from_user.id}")
+        await callback.answer("TEST OK")
+        if callback.message:
+            await callback.message.answer("✅ TEST: callback дошёл до хендлера")
+    except Exception as e:
+        logger.exception(f"PAYLINKS TEST callback crashed: {e}")
+        raise
+
+
+@router.callback_query()
+async def catch_all_callbacks(callback: CallbackQuery):
+    logger.info(f"CALLBACK CATCH ALL data={callback.data!r} from_user={callback.from_user.id}")
+    await callback.answer("catch-all", show_alert=False)
     
 
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
