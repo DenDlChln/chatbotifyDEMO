@@ -2950,18 +2950,18 @@ async def on_startup_bot(bot: Bot):
 
 
 async def main():
-    if not BOTTOKEN:
-        logger.error("BOTTOKEN not set")
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not set")
         return
-    if not REDISURL:
-        logger.error("REDISURL not set")
+    if not REDIS_URL:
+        logger.error("REDIS_URL not set")
         return
 
     bot = Bot(
-        token=BOTTOKEN,
+        token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode="HTML"),
     )
-    storage = RedisStorage.from_url(REDISURL)
+    storage = RedisStorage.from_url(REDIS_URL)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
     dp.startup.register(on_startup_bot)
@@ -2999,9 +2999,9 @@ async def main():
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-        secret_token=WEBHOOKSECRET,
+        secret_token=WEBHOOK_SECRET,
         handle_in_background=True,
-    ).register(app, path=WEBHOOKPATH)
+    ).register(app, path=WEBHOOK_PATH)
 
     setupapplication(app, dp, bot=bot)
 
@@ -3033,7 +3033,7 @@ async def main():
     app.on_shutdown.append(on_shutdown)
 
     try:
-        await bot.set_webhook(WEBHOOKURL, secret_token=WEBHOOKSECRET)
+        await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
     except Exception as e:
         logger.error(f"Webhook set error {e}")
 
