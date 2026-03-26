@@ -3063,7 +3063,7 @@ async def main():
     app.router.add_get("/healthcheck", healthcheck)
     app.router.add_get("/pay-month", pay_month_handler)
     app.router.add_get("/pay-year", pay_year_handler)
-    app.router.add_post("/yookassa-webhook", yookassa_webhook)
+    app.router.add_post("/yookassa_webhook", yookassa_webhook)
 
     SimpleRequestHandler(
         dispatcher=dp,
