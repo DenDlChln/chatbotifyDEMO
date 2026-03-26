@@ -425,7 +425,6 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
             pass
 
 
-
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
 async def paylinks_cafe_id_input(message: Message, state: FSMContext):
     logger.info(
