@@ -1416,6 +1416,12 @@ async def testcb_handler(callback: CallbackQuery):
         await callback.message.answer("✅ test_cb handler сработал")
 
 
+@router.callback_query()
+async def catch_all_callbacks(callback: CallbackQuery):
+    logger.info(f"CALLBACK CATCH ALL data={callback.data!r} from_user={callback.from_user.id}")
+    await callback.answer("catch-all", show_alert=False)
+
+
 # ---------------- Stats button (DEMO preview for non-admin) ----------------
 @router.message(F.text == BTN_STATS)
 async def stats_button(message: Message):
@@ -1900,13 +1906,7 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
     except Exception as e:
         logger.exception(f"PAYLINKS CALLBACK crashed: {e}")
         raise
-
-
-@router.callback_query()
-async def catch_all_callbacks(callback: CallbackQuery):
-    logger.info(f"CALLBACK CATCH ALL data={callback.data!r} from_user={callback.from_user.id}")
-    await callback.answer("catch-all", show_alert=False)
-    
+ 
 
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
 async def paylinks_cafe_id_input(message: Message, state: FSMContext):
