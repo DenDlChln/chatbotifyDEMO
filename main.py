@@ -3004,7 +3004,7 @@ async def main():
             return response
         except Exception as e:
             logger.exception(f"RAW HTTP ERROR {request.method} {request.path}: {e}")
-             raise
+            raise
             
     app = web.Application(middlewares=[raw_log_middleware])
     app["bot"] = bot
