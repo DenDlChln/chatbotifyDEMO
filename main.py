@@ -115,7 +115,6 @@ def load_config() -> Dict[str, Any]:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
             cafe = data.get("cafe", {})
-
             default_config.update(
                 name=cafe.get("name", default_config["name"]),
                 phone=cafe.get("phone", default_config["phone"]),
@@ -2992,9 +2991,9 @@ async def main():
 
     app.router.add_get("/", healthcheck)
     app.router.add_get("/healthcheck", healthcheck)
-    app.router.add_get("/pay-month", paymonthhandler)
-    app.router.add_get("/pay-year", payyearhandler)
-    app.router.add_post("/yookassa-webhook", yookassawebhook)
+    app.router.add_get("/pay-month", pay_month_handler)
+    app.router.add_get("/pay-year", pay_year_handler)
+    app.router.add_post("/yookassa-webhook", yookassa_webhook)
 
     SimpleRequestHandler(
         dispatcher=dp,
@@ -3003,7 +3002,7 @@ async def main():
         handle_in_background=True,
     ).register(app, path=WEBHOOK_PATH)
 
-    setupapplication(app, dp, bot=bot)
+    setup_application(app, dp, bot=bot)
 
     async def on_shutdown(a: web.Application):
         global smarttask, substask
