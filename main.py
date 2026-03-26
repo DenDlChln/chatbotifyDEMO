@@ -1401,15 +1401,16 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 async def testcb(message: Message):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="TEST CALLBACK", callback_data="test_cb_123")]
+            [InlineKeyboardButton(text="TEST CALLBACK", callback_data="test_cb_123")],
+            [InlineKeyboardButton(text="OPEN SITE", url="https://telegram.org")],
         ]
     )
-    await message.answer("Нажми тестовую кнопку", reply_markup=kb)
+    await message.answer("Нажми одну из кнопок", reply_markup=kb)
 
 
 @router.callback_query(F.data == "test_cb_123")
 async def testcb_handler(callback: CallbackQuery):
-    logger.info(f"TEST_CB_HANDLER from_user={callback.from_user.id}")
+    logger.info(f"TEST_CB_HANDLER from_user={callback.from_user.id} data={callback.data!r}")
     await callback.answer("TEST_CB_OK")
     if callback.message:
         await callback.message.answer("✅ test_cb handler сработал")
