@@ -1043,11 +1043,6 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
-@router.message(Command("pingtest"))
-async def pingtest(message: Message):
-    await message.answer("PINGTEST_OK")
-
-
 @router.message(Command("webhookinfo"))
 async def webhookinfo(message: Message):
     info = await message.bot.get_webhook_info()
@@ -1401,14 +1396,20 @@ async def menu_pick_remove_item(message: Message, state: FSMContext):
 async def testcb(message: Message):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="TEST CALLBACK", callback_data="test_cb_123")],
-            [InlineKeyboardButton(text="OPEN SITE", url="https://telegram.org")],
+            [InlineKeyboardButton(text="PING", callback_data="ping")]
         ]
     )
-    await message.answer("Нажми одну из кнопок", reply_markup=kb)
+    await message.answer("Жми PING", reply_markup=kb)
 
 
-@router.callback_query(F.data == "test_cb_123")
+@router.callback_query(F.data == "ping")
+async def ping_callback(callback: CallbackQuery):
+    logger.info(f"PING CALLBACK from_user={callback.from_user.id} data={callback.data!r}")
+    await callback.answer("pong")
+    if callback.message:
+        await callback.message.answer("callback ok")
+
+#@router.callback_query(F.data == "test_cb_123")
 async def testcb_handler(callback: CallbackQuery):
     logger.info(f"TEST_CB_HANDLER from_user={callback.from_user.id} data={callback.data!r}")
     await callback.answer("TEST_CB_OK")
@@ -1416,10 +1417,24 @@ async def testcb_handler(callback: CallbackQuery):
         await callback.message.answer("✅ test_cb handler сработал")
 
 
-@router.callback_query()
+#@router.callback_query()
 async def catch_all_callbacks(callback: CallbackQuery):
     logger.info(f"CALLBACK CATCH ALL data={callback.data!r} from_user={callback.from_user.id}")
     await callback.answer("catch-all", show_alert=False)
+
+
+#@router.callback_query(F.data.startswith("paylinks:"))
+async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
+    try:
+        logger.info(
+            f"PAYLINKS CALLBACK data={callback.data!r} from_user={callback.from_user.id}"
+        )
+        await callback.answer("TEST OK")
+        if callback.message:
+            await callback.message.answer("TEST callback")
+    except Exception as e:
+        logger.exception(f"PAYLINKS CALLBACK crashed: {e}")
+        raise
 
 
 # ---------------- Stats button (DEMO preview for non-admin) ----------------
@@ -1892,20 +1907,6 @@ async def admin_reply_to_client(message: Message):
     except Exception as e:
         logger.error(f"ADMIN CATCHER 2 send error: {e}")
         await message.answer("❌ Ошибка отправки")
-        
-
-@router.callback_query(F.data.startswith("paylinks:"))
-async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
-    try:
-        logger.info(
-            f"PAYLINKS CALLBACK data={callback.data!r} from_user={callback.from_user.id}"
-        )
-        await callback.answer("TEST OK")
-        if callback.message:
-            await callback.message.answer("TEST callback")
-    except Exception as e:
-        logger.exception(f"PAYLINKS CALLBACK crashed: {e}")
-        raise
  
 
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
