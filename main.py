@@ -359,13 +359,13 @@ class PaylinksStates(StatesGroup):
 
 @router.callback_query(F.data.startswith("paylinks:"))
 async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMContext):
-    try:
-        logger.info(
-            f"PAYLINKS DEBUG 1 callback data={callback.data!r} "
-            f"from={callback.from_user.id} "
-            f"chat={callback.message.chat.id if callback.message else 'nochat'}"
-        )
+    logger.info(
+        f"PAYLINKS DEBUG 1 callback data={callback.data!r} "
+        f"from={callback.from_user.id} "
+        f"chat={callback.message.chat.id if callback.message else 'nochat'}"
+    )
 
+    try:
         if callback.from_user.id not in {ADMIN_ID, SUPERADMIN_ID}:
             await callback.answer("Нет доступа", show_alert=True)
             return
@@ -375,14 +375,16 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
             await callback.answer("Некорректные данные кнопки", show_alert=True)
             return
 
-        draft_id = data.split(":", 1)[1].strip()
+        parts = data.split(":", 1)
+        draft_id = (parts[1] if len(parts) > 1 else "").strip()
         if not draft_id:
             await callback.answer("Draft ID не найден", show_alert=True)
             return
 
+        # Проверим, что draft реально существует в Redis
         try:
             r = await get_redis_client()
-            raw = await r.get(_pay_draft_key(draft_id))
+            raw = await r.get(paydraft_key(draft_id))
             await r.aclose()
         except Exception as e:
             logger.exception(f"PAYLINKS DEBUG 2 redis read error draft_id={draft_id}: {e}")
@@ -395,27 +397,33 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
                 await callback.message.answer("Draft не найден или уже истёк.")
             return
 
+        # Стартуем FSM цепочку
         await state.clear()
         await state.update_data(draft_id=draft_id)
         await state.set_state(PaylinksStates.waiting_for_cafe_id)
 
+        # Одно понятное answer, чтобы убрать “часики”
         await callback.answer("Ок")
+
         if callback.message:
             await callback.message.answer(
-                "Введи код кафе вручную.\n\n"
+                "Отправь код кафе вручную.\n\n"
                 "Примеры:\n"
                 "<code>23</code>\n"
                 "<code>cafe_023</code>\n\n"
-                "После этого я покажу превью сообщения, и ты сможешь его отредактировать перед отправкой клиенту.",
+                "После этого я покажу превью сообщения, и ты сможешь его отредактировать "
+                "перед отправкой клиенту.",
                 parse_mode="HTML",
             )
 
     except Exception as e:
         logger.exception(f"PAYLINKS CALLBACK crashed: {e}")
+        # Здесь уже не пытаемся второй раз callback.answer, чтобы не словить Flood
         try:
             await callback.answer("Ошибка обработки кнопки", show_alert=True)
         except Exception:
             pass
+
 
 
 @router.message(StateFilter(PaylinksStates.waiting_for_cafe_id))
