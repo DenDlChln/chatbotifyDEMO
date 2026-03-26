@@ -2981,22 +2981,31 @@ async def main():
 
     @web.middleware
     async def raw_log_middleware(request: web.Request, handler):
+        body_text = ""
+        try:
+            body_bytes = await request.read()
+            body_text = body_bytes.decode("utf-8", errors="replace")
+        except Exception as e:
+            body_text = f"<body read error: {e}>"
+
         logger.info(
             f"RAW HTTP {request.method} {request.path} "
             f"content_type={request.content_type!r} "
             f"ua={request.headers.get('User-Agent')!r} "
             f"secret={request.headers.get('X-Telegram-Bot-Api-Secret-Token')!r}"
         )
+        logger.info(f"RAW HTTP BODY: {body_text[:3000]}")
+
         try:
+            if body_text:
+                request._read_bytes = body_text.encode("utf-8")
             response = await handler(request)
-            logger.info(
-                f"RAW HTTP DONE {request.method} {request.path} status={response.status}"
-            )
+            logger.info(f"RAW HTTP DONE {request.method} {request.path} status={response.status}")
             return response
         except Exception as e:
             logger.exception(f"RAW HTTP ERROR {request.method} {request.path}: {e}")
-            raise
-
+             raise
+            
     app = web.Application(middlewares=[raw_log_middleware])
     app["bot"] = bot
 
