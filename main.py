@@ -2964,6 +2964,8 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     @dp.update.outer_middleware()
+
+    
 async def log_all_updates(handler, event, data):
     try:
         update = data.get("event_update")
