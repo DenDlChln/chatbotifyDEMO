@@ -2950,20 +2950,41 @@ async def on_startup_bot(bot: Bot):
 
 
 async def main():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not set")
+    if not BOTTOKEN:
+        logger.error("BOTTOKEN not set")
         return
-    if not REDIS_URL:
-        logger.error("REDIS_URL not set")
+    if not REDISURL:
+        logger.error("REDISURL not set")
         return
 
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    storage = RedisStorage.from_url(REDIS_URL)
+    bot = Bot(
+        token=BOTTOKEN,
+        default=DefaultBotProperties(parse_mode="HTML"),
+    )
+    storage = RedisStorage.from_url(REDISURL)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
     dp.startup.register(on_startup_bot)
 
-    app = web.Application()
+    @web.middleware
+    async def raw_log_middleware(request: web.Request, handler):
+        logger.info(
+            f"RAW HTTP {request.method} {request.path} "
+            f"content_type={request.content_type!r} "
+            f"ua={request.headers.get('User-Agent')!r} "
+            f"secret={request.headers.get('X-Telegram-Bot-Api-Secret-Token')!r}"
+        )
+        try:
+            response = await handler(request)
+            logger.info(
+                f"RAW HTTP DONE {request.method} {request.path} status={response.status}"
+            )
+            return response
+        except Exception as e:
+            logger.exception(f"RAW HTTP ERROR {request.method} {request.path}: {e}")
+            raise
+
+    app = web.Application(middlewares=[raw_log_middleware])
     app["bot"] = bot
 
     async def healthcheck(request: web.Request):
@@ -2971,29 +2992,29 @@ async def main():
 
     app.router.add_get("/", healthcheck)
     app.router.add_get("/healthcheck", healthcheck)
-    app.router.add_get("/pay-month", pay_month_handler)
-    app.router.add_get("/pay-year", pay_year_handler)
-    app.router.add_post("/yookassa_webhook", yookassa_webhook)
+    app.router.add_get("/pay-month", paymonthhandler)
+    app.router.add_get("/pay-year", payyearhandler)
+    app.router.add_post("/yookassa-webhook", yookassawebhook)
 
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-        secret_token=WEBHOOK_SECRET,
+        secret_token=WEBHOOKSECRET,
         handle_in_background=True,
-    ).register(app, path=WEBHOOK_PATH)
+    ).register(app, path=WEBHOOKPATH)
 
-    setup_application(app, dp, bot=bot)
+    setupapplication(app, dp, bot=bot)
 
     async def on_shutdown(a: web.Application):
-        global smart_task, subs_task
+        global smarttask, substask
         try:
-            if smart_task and not smart_task.done():
-                smart_task.cancel()
+            if smarttask and not smarttask.done():
+                smarttask.cancel()
         except Exception:
             pass
         try:
-            if subs_task and not subs_task.done():
-                subs_task.cancel()
+            if substask and not substask.done():
+                substask.cancel()
         except Exception:
             pass
         try:
@@ -3011,12 +3032,16 @@ async def main():
 
     app.on_shutdown.append(on_shutdown)
 
+    try:
+        await bot.set_webhook(WEBHOOKURL, secret_token=WEBHOOKSECRET)
+    except Exception as e:
+        logger.error(f"Webhook set error {e}")
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-
-    logger.info("Bot started on 0.0.0.0:%s", PORT)
+    logger.info(f"Bot started on 0.0.0.0:{PORT}")
     await asyncio.Event().wait()
 
 
