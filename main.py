@@ -2965,21 +2965,20 @@ async def main():
 
     @dp.update.outer_middleware()
 
+    async def log_all_updates(handler, event, data):
+        try:
+            update = data.get("event_update")
+            if update:
+                logger.info(f"RAW UPDATE TYPE: {update.event_type}")
+                logger.info(
+                    f"RAW UPDATE DATA: {update.model_dump_json(exclude_none=True)[:2000]}"
+                )
+        except Exception as e:
+            logger.exception(f"UPDATE LOG ERROR: {e}")
+        return await handler(event, data)
     
-async def log_all_updates(handler, event, data):
-    try:
-        update = data.get("event_update")
-        if update:
-            logger.info(f"RAW UPDATE TYPE: {update.event_type}")
-            logger.info(
-                f"RAW UPDATE DATA: {update.model_dump_json(exclude_none=True)[:2000]}"
-            )
-    except Exception as e:
-        logger.exception(f"UPDATE LOG ERROR: {e}")
-    return await handler(event, data)
-    
-    dp.include_router(router)
-    dp.startup.register(on_startup_bot)
+        dp.include_router(router)
+        dp.startup.register(on_startup_bot)
 
     @web.middleware
     async def raw_log_middleware(request: web.Request, handler):
