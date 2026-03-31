@@ -1787,45 +1787,6 @@ async def edit_cart(message: Message, state: FSMContext):
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
-@router.message(
-    F.from_user.id == ADMIN_ID,
-    StateFilter(None),
-    F.reply_to_message,
-)
-async def admin_reply_to_client_message(message: Message):
-    logger.info(
-        f"ADMIN CATCHER 2 text={message.text!r} "
-        f"reply={message.reply_to_message is not None}"
-    )
-
-    if not message.reply_to_message:
-        return
-
-    if not message.reply_to_message.from_user or not message.reply_to_message.from_user.is_bot:
-        return
-
-    replied_text = message.reply_to_message.text or ""
-    if "CafeBotify START" not in replied_text and "Cafebotify START" not in replied_text:
-        return
-
-    tgid_match = re.search(r"code(\\d+)code", replied_text)
-    if not tgid_match:
-        await message.answer("Не найден Telegram ID")
-        return
-
-    client_id = int(tgid_match.group(1))
-    try:
-        await message.bot.send_message(
-            client_id,
-            f"📩 <b>Ответ CafeBotify:</b>\n{html.quote(message.text or '')}",
-            parse_mode="HTML",
-        )
-        await message.answer(f"✅Отправлено клиенту {client_id}")
-    except Exception as e:
-        logger.error(f"ADMIN CATCHER 2 send error: {e}")
-        await message.answer("❌Не удалось отправить сообщение клиенту.")
-
-
 @router.message(StateFilter(OrderStates.cart_edit_pick_item))
 async def pick_item_to_edit(message: Message, state: FSMContext):
     text = (message.text or "").strip()
