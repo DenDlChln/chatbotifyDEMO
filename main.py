@@ -94,7 +94,7 @@ def load_config() -> Dict[str, Any]:
         "phone": "+7 989 000-00-00",
         "admin_chat_id": 1471275603,
         "work_start": 9,
-        "work_end": 21,
+        "work_end": 1,
         "address": "г. Краснодар, ул. Красная, 123",
         "menu": {
             "☕ Капучино": 250,
@@ -2990,7 +2990,7 @@ async def any_text_message(message: Message, state: FSMContext):
             )
             return
 
-        await start_add_item_message(message, state, text)
+        await start_add_item(message, state, text)
         return
 
     if message.from_user and message.from_user.id == ADMIN_ID:
