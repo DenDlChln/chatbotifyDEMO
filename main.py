@@ -2920,6 +2920,20 @@ async def set_paid_cmd(message: Message):
 
 
 # ---------------- Fallback drink pick ----------------
+@router.message(StateFilter(None), F.text.in_(list(MENU.keys())))
+async def menu_drink_click(message: Message, state: FSMContext):
+    logger.info(f"MENU DRINK CLICK text={message.text!r}")
+
+    if not is_cafe_open():
+        await message.answer(
+            get_closed_message(),
+            reply_markup=create_client_menu_keyboard(),
+        )
+        return
+
+    await start_add_item_message(message, state, message.text)
+
+
 @router.message(F.text)
 async def any_text_message(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -2963,13 +2977,6 @@ async def any_text_message(message: Message, state: FSMContext):
     }
 
     if text in known_buttons:
-        return
-
-    if text in MENU:
-        if not is_cafe_open():
-            await message.answer(get_closed_message(), reply_markup=create_client_menu_keyboard())
-            return
-        await _start_add_item(message, state, text)
         return
 
     await message.answer(
