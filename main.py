@@ -1790,41 +1790,49 @@ async def edit_cart(message: Message, state: FSMContext):
 @router.message(
     F.from_user.id == ADMIN_ID,
     StateFilter(None),
-    F.text.startswith("[Ответ] tgid:")
+    F.reply_to_message
 )
-async def admin_write_to_payer(message: Message):
-    logger.info(f"ADMIN CATCHER 1 text={message.text!r}")
+async def admin_reply_to_payer(message: Message):
+    logger.info(
+        f"ADMIN CATCHER 2 text={message.text!r} "
+        f"reply={bool(message.reply_to_message)}"
+    )
 
-    text = (message.text or "").strip()
-
-    tgid_match = re.search(r"tgid:(\d+)", text)
-    if not tgid_match:
-        logger.info("ADMIN CATCHER 1 no tgid found")
+    if not message.reply_to_message:
+        logger.info("ADMIN CATCHER 2 no reply_to_message")
         return
 
-    tgid_int = int(tgid_match.group(1))
-    logger.info(f"ADMIN CATCHER 1 parsed tgid={tgid_int}")
+    if not message.reply_to_message.from_user or not message.reply_to_message.from_user.is_bot:
+        logger.info("ADMIN CATCHER 2 reply is not to bot")
+        return
 
-    client_token = (os.getenv("CLIENT_BOT_TOKEN") or "").strip()
-    if client_token:
-        client_bot = Bot(token=client_token)
-        try:
-            payload_text = text.replace(f"[Ответ] tgid:{tgid_int}", "", 1).strip()
-            if not payload_text:
-                payload_text = re.sub(r"^\[Ответ\]\s*tgid:\d+\s*", "", text).strip()
+    replied_text = message.reply_to_message.text or ""
+    logger.info(f"ADMIN CATCHER 2 replied text preview={replied_text[:150]!r}")
 
-            await client_bot.send_message(
-                tgid_int,
-                f"💬 <b>Ответ от поддержки:</b>\n\n{html.quote(payload_text)}",
-                parse_mode="HTML",
-            )
-            await message.answer(f"✅ Отправлено плательщику <code>{tgid_int}</code>")
-            logger.info(f"ADMIN CATCHER 1 sent to tgid={tgid_int}")
-        finally:
-            await client_bot.session.close()
-    else:
-        logger.info("ADMIN CATCHER 1 CLIENT_BOT_TOKEN missing")
-        await message.answer("❌ CLIENT_BOT_TOKEN не задан.")
+    if "CafeBotify START" not in replied_text and "Cafebotify START" not in replied_text:
+        logger.info("ADMIN CATCHER 2 not payment notification")
+        return
+
+    tgid_match = re.search(r"<code>(\d+)</code>", replied_text)
+    if not tgid_match:
+        logger.error("ADMIN CATCHER 2 no tgid in notification")
+        await message.answer("Не найден Telegram ID")
+        return
+
+    client_id = int(tgid_match.group(1))
+    logger.info(f"ADMIN CATCHER 2 found client_id={client_id}")
+
+    try:
+        await message.bot.send_message(
+            client_id,
+            f"💬 <b>Ответ от поддержки CafeBotify:</b>\n\n{html.quote(message.text or '')}",
+            parse_mode="HTML",
+        )
+        await message.answer(f"✅ Ответ отправлен клиенту <code>{client_id}</code>")
+        logger.info(f"ADMIN CATCHER 2 sent to client_id={client_id}")
+    except Exception as e:
+        logger.error(f"ADMIN CATCHER 2 send error: {e}")
+        await message.answer("❌ Не удалось отправить сообщение клиенту")
 
 
 @router.message(StateFilter(OrderStates.cart_edit_pick_item))
