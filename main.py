@@ -1787,12 +1787,15 @@ async def edit_cart(message: Message, state: FSMContext):
     await message.answer("Выберите позицию:", reply_markup=create_cart_pick_item_keyboard(cart))
 
 
-@router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
+@router.message(
+    F.from_user.id == ADMIN_ID,
+    StateFilter(None),
+    F.text.startswith("[Ответ] tgid:")
+)
 async def admin_write_to_payer(message: Message):
     logger.info(f"ADMIN CATCHER 1 text={message.text!r}")
 
-    if not (text := message.text) or not text.startswith("[Ответ] tgid:"):
-        return
+    text = (message.text or "").strip()
 
     tgid_match = re.search(r"tgid:(\d+)", text)
     if not tgid_match:
@@ -1808,7 +1811,7 @@ async def admin_write_to_payer(message: Message):
         try:
             payload_text = text.replace(f"[Ответ] tgid:{tgid_int}", "", 1).strip()
             if not payload_text:
-                payload_text = text.replace("[Ответ] tgid:", "", 1).strip()
+                payload_text = re.sub(r"^\[Ответ\]\s*tgid:\d+\s*", "", text).strip()
 
             await client_bot.send_message(
                 tgid_int,
