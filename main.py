@@ -2990,7 +2990,7 @@ async def any_text_message(message: Message, state: FSMContext):
             )
             return
 
-        await_start_add_item(message, state, text)
+        await _start_add_item(message, state, text)
         return
 
     if message.from_user and message.from_user.id == ADMIN_ID:
