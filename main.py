@@ -94,7 +94,7 @@ def load_config() -> Dict[str, Any]:
         "phone": "+7 989 000-00-00",
         "admin_chat_id": 1471275603,
         "work_start": 9,
-        "work_end": 1,
+        "work_end": 23,
         "address": "г. Краснодар, ул. Красная, 123",
         "menu": {
             "☕ Капучино": 250,
