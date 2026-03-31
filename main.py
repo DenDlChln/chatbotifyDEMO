@@ -2942,7 +2942,7 @@ async def menu_drink_click(message: Message, state: FSMContext):
         )
         return
 
-    await start_add_item_message(message, state, message.text)
+    await start_add_item(message, state, message.text)
 
 
 @router.message(F.text)
