@@ -2931,20 +2931,6 @@ async def set_paid_cmd(message: Message):
 
 
 # ---------------- Fallback drink pick ----------------
-@router.message(StateFilter(None), F.text.in_(list(MENU.keys())))
-async def menu_drink_click(message: Message, state: FSMContext):
-    logger.info(f"MENU DRINK CLICK text={message.text!r}")
-
-    if not is_cafe_open():
-        await message.answer(
-            get_closed_message(),
-            reply_markup=create_client_menu_keyboard(),
-        )
-        return
-
-    await start_add_item(message, state, message.text)
-
-
 @router.message(F.text)
 async def any_text_message(message: Message, state: FSMContext):
     text = (message.text or "").strip()
@@ -2967,6 +2953,8 @@ async def any_text_message(message: Message, state: FSMContext):
         BTN_LINKS,
         BTN_RENEW_SUB,
         BTN_SUBSCRIPTION,
+        BTN_ADS,
+        BTN_BROADCAST,
         BTN_ADMIN_HELP,
         BTN_SUPPORT,
         BTN_CONFIRM,
@@ -2977,21 +2965,43 @@ async def any_text_message(message: Message, state: FSMContext):
         BTN_EDIT_CART,
         BTN_CLEAR_CART,
         BTN_BACK,
+        BTN_TO_CLIENT_MODE,
         CART_ACT_PLUS,
         CART_ACT_MINUS,
         CART_ACT_DEL,
         CART_ACT_DONE,
         MENU_EDIT_ADD,
         MENU_EDIT_EDIT,
-        BTN_TO_CLIENT_MODE,
         MENU_EDIT_DEL,
+        BTN_REPEAT_LAST,
+        BTN_REPEAT_NO,
     }
 
     if text in known_buttons:
         return
 
+    if text in MENU:
+        logger.info(f"MENU DRINK FALLBACK text={text!r}")
+
+        if not is_cafe_open():
+            await message.answer(
+                get_closed_message(),
+                reply_markup=create_client_menu_keyboard(),
+            )
+            return
+
+        await start_add_item_message(message, state, text)
+        return
+
+    if message.from_user and message.from_user.id == ADMIN_ID:
+        await message.answer(
+            "Используй кнопки ниже.",
+            reply_markup=create_owner_menu_keyboard(),
+        )
+        return
+
     await message.answer(
-        "Не понял. Используйте кнопки меню.",
+        "Используй кнопки ниже.",
         reply_markup=create_client_menu_keyboard(),
     )
 
