@@ -2416,6 +2416,51 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
         data = resp.json()
         confirmation = data["confirmation"]["confirmation_url"]
         return confirmation
+        
+        
+async def verify_yookassa_payment(payment_id: str) -> Optional[dict]:
+    """
+    Встречный запрос к ЮKassa: подтверждает, что payment_id реально
+    существует, оплачен (paid=True) и имеет статус 'succeeded'.
+    Возвращает данные платежа от ЮKassa или None, если платёж
+    не подтверждён. Вебхуку самому по себе доверять нельзя —
+    кто угодно может прислать поддельный POST на этот URL.
+    """
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        logger.error("verify_yookassa_payment: Yookassa credentials not set")
+        return None
+    if not payment_id:
+        return None
+
+    url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url,
+                auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+                timeout=10,
+            )
+    except Exception as e:
+        logger.exception(f"verify_yookassa_payment request failed payment_id={payment_id}: {e}")
+        return None
+
+    if resp.status_code != 200:
+        logger.error(
+            f"verify_yookassa_payment bad status payment_id={payment_id} "
+            f"code={resp.status_code} body={resp.text}"
+        )
+        return None
+
+    data = resp.json()
+    if data.get("status") != "succeeded" or data.get("paid") is not True:
+        logger.error(
+            f"verify_yookassa_payment not succeeded payment_id={payment_id} "
+            f"status={data.get('status')} paid={data.get('paid')}"
+        )
+        return None
+
+    return data
 
 
 async def pay_month_handler(request: web.Request):
@@ -2484,18 +2529,28 @@ async def yookassa_webhook(request: web.Request):
     if event != "payment.succeeded":
         return web.json_response({"status": "ignored"})
 
-    metadata = obj.get("metadata", {})
+    payment_id = obj.get("id")
+
+    # ВАЖНО: тело вебхука не заслуживает доверия само по себе —
+    # кто угодно может прислать POST на этот URL с любыми данными.
+    # Подтверждаем платёж встречным запросом к API ЮKassa и дальше
+    # работаем только с verified_payment, а не с obj из запроса.
+    verified_payment = await verify_yookassa_payment(payment_id)
+    if not verified_payment:
+        logger.error(f"Yookassa webhook: payment not verified, payment_id={payment_id}")
+        return web.json_response({"status": "not_verified"}, status=400)
+
+    metadata = verified_payment.get("metadata", {})
     tgid = metadata.get("telegram_user_id")
     cafe_id = metadata.get("cafe_id")
 
-    payment_id = obj.get("id")
-    amount = obj.get("amount", {})
+    amount = verified_payment.get("amount", {})
     amount_value = amount.get("value") if isinstance(amount, dict) else None
     amount_currency = amount.get("currency") if isinstance(amount, dict) else None
-    payment_status = obj.get("status")
+    payment_status = verified_payment.get("status")
 
     logger.info(
-        f"Yookassa webhook payment_id={payment_id} "
+        f"Yookassa webhook VERIFIED payment_id={payment_id} "
         f"cafe_id={cafe_id} status={payment_status} "
         f"amount={amount_value} {amount_currency} tgid={tgid}"
     )
