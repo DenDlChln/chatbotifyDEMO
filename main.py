@@ -3062,15 +3062,15 @@ async def main():
     setup_application(app, dp, bot=bot)
 
     async def on_shutdown(a: web.Application):
-        global smarttask, substask
+        global smart_task, subs_task
         try:
-            if smarttask and not smarttask.done():
-                smarttask.cancel()
+            if smart_task and not smart_task.done():
+                smart_task.cancel()
         except Exception:
             pass
         try:
-            if substask and not substask.done():
-                substask.cancel()
+            if subs_task and not subs_task.done():
+                subs_task.cancel()
         except Exception:
             pass
         try:
