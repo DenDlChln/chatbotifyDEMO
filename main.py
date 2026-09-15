@@ -384,7 +384,7 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         # Проверим, что draft реально существует в Redis
         try:
             r = await get_redis_client()
-            raw = await r.get(paydraft_key(draft_id))
+            raw = await r.get(_pay_draft_key(draft_id))
             await r.aclose()
         except Exception as e:
             logger.exception(f"PAYLINKS DEBUG 2 redis read error draft_id={draft_id}: {e}")
