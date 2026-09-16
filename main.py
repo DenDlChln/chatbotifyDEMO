@@ -2521,6 +2521,15 @@ async def pay_year_handler(request: web.Request):
     raise web.HTTPFound(confirmation_url)
 
 
+async def pay_handler(request: web.Request):
+    plan = request.query.get("plan", "month")
+
+    if plan == "year":
+        return await pay_year_handler(request)
+
+    return await pay_month_handler(request)
+    
+
 async def yookassa_webhook(request: web.Request):
     data = await request.json()
     event = data.get("event")
@@ -3103,6 +3112,7 @@ async def main():
 
     app.router.add_get("/", healthcheck)
     app.router.add_get("/healthcheck", healthcheck)
+    app.router.add_get("/pay", pay_handler)
     app.router.add_get("/pay-month", pay_month_handler)
     app.router.add_get("/pay-year", pay_year_handler)
     app.router.add_post("/yookassa_webhook", yookassa_webhook)
