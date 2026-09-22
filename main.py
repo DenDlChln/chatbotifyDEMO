@@ -2489,6 +2489,13 @@ async def pay_month_handler(request: web.Request):
         metadata["cafe_id"] = cafe_id
 
     confirmation_url = await create_payment(amount, description, metadata)
+
+    logger.info(
+    "PAY REDIRECT plan=%s url=%s",
+    "month",
+    confirmation_url[:100],
+    )
+    
     raise web.HTTPFound(confirmation_url)
 
 
