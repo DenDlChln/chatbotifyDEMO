@@ -2116,7 +2116,12 @@ async def booking_finish(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(F.from_user.id == ADMIN_ID, StateFilter(None))
+@router.message(
+    F.from_user.id == ADMIN_ID,
+    F.reply_to_message,
+    F.reply_to_message.from_user.is_bot == True,
+    StateFilter(None),
+)
 async def admin_reply_to_client(message: Message):
     logger.info(
         f"ADMIN CATCHER 2 text={message.text!r} reply={message.reply_to_message is not None}"
