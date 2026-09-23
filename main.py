@@ -2740,6 +2740,14 @@ async def yookassa_webhook(request: web.Request):
     try:
         r = await get_redis_client()
         await r.setex(_pay_draft_key(draft_id), 7 * 86400, json.dumps(payload, ensure_ascii=False))
+        logger.info(
+            "Payment draft saved: draft_id=%s key=%s tgid=%s cafe_id=%s",
+            draft_id,
+            _pay_draft_key(draft_id),
+            tgid_int,
+            cafe_id,
+        )
+        
         await r.aclose()
     except Exception as e:
         logger.error(f"yookassa_webhook draft redis error: {e}")
