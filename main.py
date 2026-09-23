@@ -13,6 +13,7 @@ import redis.asyncio as redis
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F, Router, html
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -1440,6 +1441,7 @@ async def pay_month_button(message: Message):
         "2) Заполните форму (данные кафе + ваш Telegram ID).\n"
         "3) Оплатите на странице ЮKassa.\n\n"
         "После успешной оплаты доступ будет активирован автоматически."
+        "Если это первая оплата бота, активация происходит в течении 24 часов."
     )
     await message.answer(
         f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 30 дней</a>",
@@ -1457,6 +1459,7 @@ async def pay_year_button(message: Message):
         "2) Заполните форму.\n"
         "3) Оплатите на странице ЮKassa.\n\n"
         "После успешной оплаты доступ будет активирован автоматически."
+        "Если это первая оплата бота, активация происходит в течении 24 часов."
     )
     await message.answer(
         f"{text}\n\n<a href=\"{html.quote(url)}\">Оплатить 360 дней</a>",
@@ -3029,21 +3032,43 @@ subs_task: Optional[asyncio.Task] = None
 
 async def on_startup_bot(bot: Bot):
     global smart_task, subs_task
+
     await sync_menu_from_redis()
-    
+
     if smart_task is None or smart_task.done():
         smart_task = asyncio.create_task(smart_return_loop(bot))
-        
+        logger.info("smart_return_loop started")
+
     # Временно отключено: старый subs_loop читает user:* и старые поля
     # cafebotify_paid / cafebotify_valid_until, что конфликтует с новой
     # моделью подписок по cafe:* / admin_subscription.
+    #
     # if subs_task is None or subs_task.done():
     #     subs_task = asyncio.create_task(subs_loop(bot))
 
     try:
-        await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
-    except Exception as e:
-        logger.error(f"Webhook set error: {e}")
+        webhook_info = await bot.get_webhook_info()
+
+        # Сравниваем только URL. Secret token Telegram API обратно не показывает,
+        # поэтому по нему нельзя безопасно делать проверку.
+        if webhook_info.url == WEBHOOK_URL:
+            logger.info("Webhook already configured: %s", WEBHOOK_URL)
+            return
+
+        await bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET,
+        )
+        logger.info("Webhook configured: %s", WEBHOOK_URL)
+
+    except TelegramRetryAfter as exc:
+        logger.warning(
+            "Telegram rate-limited SetWebhook; retry after %s seconds.",
+            exc.retry_after,
+        )
+
+    except Exception:
+        logger.exception("Webhook setup error")
 
 
 async def main():
@@ -3139,10 +3164,6 @@ async def main():
         except Exception:
             pass
         try:
-            await bot.delete_webhook()
-        except Exception:
-            pass
-        try:
             await storage.close()
         except Exception:
             pass
@@ -3152,11 +3173,6 @@ async def main():
             pass
 
     app.on_shutdown.append(on_shutdown)
-
-    try:
-        await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
-    except Exception as e:
-        logger.error(f"Webhook set error {e}")
 
     runner = web.AppRunner(app)
     await runner.setup()
