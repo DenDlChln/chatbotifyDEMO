@@ -2346,7 +2346,7 @@ async def subs_check_and_notify(bot: Bot):
 
         # напоминание
         if SUBS_REMIND_DAYS_BEFORE - 0.5 <= days_left <= SUBS_REMIND_DAYS_BEFORE + 0.5:
-            pay_url = f"{PAY_LANDING_URL}?tg_id={user_id}&plan=month"
+            pay_url = f"{PAY_LANDING_URL}?ref={user_id}&plan=month"
             try:
                 await bot.send_message(
                     user_id,
