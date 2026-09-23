@@ -385,7 +385,7 @@ async def paylinks_send_to_client_callback(callback: CallbackQuery, state: FSMCo
         # Проверим, что draft реально существует в Redis
         try:
             r = await get_redis_client()
-            raw = await r.get(paydraft_key(draft_id))
+            raw = await r.get(_pay_draft_key(draft_id))
             await r.aclose()
         except Exception as e:
             logger.exception(f"PAYLINKS DEBUG 2 redis read error draft_id={draft_id}: {e}")
@@ -586,21 +586,102 @@ async def paylinks_preview_approve_message(message: Message, state: FSMContext):
 
     try:
         r = await get_redis_client()
-        raw = await r.get(_pay_draft_key(draft_id))
-        payload = json.loads(raw) if raw else {}
-        payload["cafe_id"] = cafe_id
-        payload["status"] = "links_sent"
-        payload["final_text"] = final_text
-        await r.setex(
-            _pay_draft_key(draft_id),
-            7 * 86400,
-            json.dumps(payload, ensure_ascii=False),
-        )
-        await r.aclose()
+
+        try:
+            raw = await r.get(_pay_draft_key(draft_id))
+            if not raw:
+                await state.clear()
+                await message.answer(
+                    "Draft не найден или истёк. Начните заново с кнопки."
+                )
+                return
+
+            payload = json.loads(raw)
+
+        # Защита от повторного подтверждения одной и той же оплаты.
+            if str(payload.get("status") or "") in {"bound", "links_sent"}:
+                await state.clear()
+                await message.answer(
+                    "Этот Draft уже был обработан ранее."
+                )
+                return
+
+            valid_until = int(payload.get("valid_until") or 0)
+            if valid_until <= int(time.time()):
+                await state.clear()
+                await message.answer(
+                    "Срок оплаченной подписки уже истёк."
+                )
+                return
+
+            payment_id = str(payload.get("payment_id") or "")
+            product = str(
+                payload.get("product") or "cafebotify_start_month"
+            )
+            amount_value = str(payload.get("amount_value") or "")
+            amount_currency = str(payload.get("amount_currency") or "")
+
+            now_ts = int(time.time())
+
+            # Сохраняем завершённое состояние draft.
+            payload["cafe_id"] = cafe_id
+            payload["status"] = "bound"
+            payload["final_text"] = final_text
+            payload["bound_at"] = now_ts
+            payload["bound_by"] = message.from_user.id
+
+        # Одна Redis-транзакция: либо назначение + подписка + Draft
+        # сохраняются вместе, либо ничего не применяется.
+            pipe = r.pipeline(transaction=True)
+
+        # Это именно тот ключ, который START использует для определения админа.
+            pipe.hset(
+                k_cafe_profile(cafe_id),
+                mapping={
+                    "admin_id": str(tgid_int),
+                },
+            )
+
+        # Это именно тот ключ и поля, которые START читает в
+        # is_subscription_active() и send_admin_panel().
+            pipe.hset(
+                k_admin_subscription(cafe_id),
+                mapping={
+                    "cafebotify_paid": "1",
+                    "cafebotify_valid_until": str(valid_until),
+                    "admin_id": str(tgid_int),
+                    "last_payment_id": payment_id,
+                    "last_product": product,
+                    "last_amount_value": amount_value,
+                    "last_amount_currency": amount_currency,
+                    "last_paid_at": str(now_ts),
+                    "source_draft_id": str(draft_id),
+                },
+            )
+
+        # Помечаем оплату уже привязанной, чтобы нельзя было применить её
+        # повторно к другому кафе.
+            pipe.setex(
+                _pay_draft_key(draft_id),
+                7 * 86400,
+                json.dumps(payload, ensure_ascii=False),
+            )
+
+            await pipe.execute()
+
+        finally:
+            await r.aclose()
+
     except Exception as e:
-        logger.exception(f"PAYLINKS DEBUG 7D redis update error draft_id={draft_id}: {e}")
+        logger.exception(
+            f"PAYLINKS DEBUG bind payment error "
+            f"draft_id={draft_id} cafe_id={cafe_id}: {e}"
+        )
         await state.clear()
-        await message.answer(f"Не удалось сохранить cafe_id/final_text: {e}")
+        await message.answer(
+            "Не удалось привязать оплату к кафе. "
+            "Проверьте логи DEMO."
+        )
         return
 
     sent_ok = False
