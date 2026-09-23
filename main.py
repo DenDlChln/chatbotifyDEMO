@@ -1433,7 +1433,7 @@ async def about_assistant(message: Message):
 @router.message(F.text == BTN_PAY_MONTH)
 async def pay_month_button(message: Message):
     user_id = message.from_user.id
-    url = f"{PAY_LANDING_MONTH}?tg_id={user_id}"
+    url = f"{PAY_LANDING_MONTH}?ref={user_id}"
     text = (
         "💳 <b>Оплата доступа на 30 дней</b>\n\n"
         "1) Откройте страницу оплаты.\n"
@@ -1450,7 +1450,7 @@ async def pay_month_button(message: Message):
 @router.message(F.text == BTN_PAY_YEAR)
 async def pay_year_button(message: Message):
     user_id = message.from_user.id
-    url = f"{PAY_LANDING_YEAR}?tg_id={user_id}"
+    url = f"{PAY_LANDING_YEAR}?ref={user_id}"
     text = (
         "💳 <b>Оплата доступа на 360 дней</b>\n\n"
         "1) Откройте страницу оплаты.\n"
