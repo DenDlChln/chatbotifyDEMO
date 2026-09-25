@@ -163,6 +163,11 @@ SUPERADMIN_ID = ADMIN_ID
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL")
+START_BOT_USERNAME = (
+    os.getenv("START_BOT_USERNAME", "")
+    .strip()
+    .lstrip("@")
+)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "cafebot123")
 HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "demo-cafebotify-denvyd.amvera.io")
 PORT = int(os.getenv("PORT", 10000))
@@ -3119,13 +3124,235 @@ async def any_text_message(message: Message, state: FSMContext):
     )
 
 
+# ============================================================
+# DEMO: отправка клиенту кнопки перехода в START
+# События приходят из START через общий Redis Stream.
+# ============================================================
+
+DEMO_ONBOARDING_STREAM = "cafebotify:demo_onboarding"
+DEMO_ONBOARDING_GROUP = "demo_onboarding_group"
+DEMO_ONBOARDING_CONSUMER = "demo_app"
+DEMO_ONBOARDING_BLOCK_MS = 5_000
+
+
+_demo_onboarding_task: Optional[asyncio.Task] = None
+
+
+def _as_text(value: object) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "ignore")
+
+    return str(value)
+
+
+def make_start_admin_link(cafe_id: str) -> str:
+    """
+    Ссылка на START с admin payload нужного кафе.
+    В START это будет /start admin_<cafe_id>.
+    """
+    safe_cafe_id = _as_text(cafe_id).strip()
+
+    if not safe_cafe_id:
+        raise ValueError("Empty cafe_id in DEMO onboarding event")
+
+    return (
+        f"https://t.me/{START_BOT_USERNAME}"
+        f"?start=admin_{safe_cafe_id}"
+    )
+
+
+def kb_open_start_admin(cafe_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🛠 Перейти в START и открыть админ-панель",
+                    url=make_start_admin_link(cafe_id),
+                ),
+            ],
+        ]
+    )
+
+
+async def ensure_demo_onboarding_group(r: redis.Redis) -> None:
+    """
+    Создаёт consumer group один раз.
+    Если группа уже есть — это нормальная ситуация.
+    """
+    try:
+        await r.xgroup_create(
+            DEMO_ONBOARDING_STREAM,
+            DEMO_ONBOARDING_GROUP,
+            id="0-0",
+            mkstream=True,
+        )
+        logger.info("DEMO onboarding Redis group created")
+    except Exception as exc:
+        # BUSYGROUP означает, что группа уже существует.
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+
+async def process_demo_onboarding_event(
+    bot: Bot,
+    r: redis.Redis,
+    *,
+    stream_id: str,
+    fields: dict,
+) -> bool:
+    """
+    Возвращает True, только если событие обработано успешно
+    и его можно подтверждать XACK.
+    """
+    event = _as_text(fields.get(b"event") or fields.get("event"))
+    client_id_raw = _as_text(
+        fields.get(b"client_id") or fields.get("client_id")
+    )
+    cafe_id = _as_text(
+        fields.get(b"cafe_id") or fields.get("cafe_id")
+    )
+    draft_id = _as_text(
+        fields.get(b"draft_id") or fields.get("draft_id")
+    )
+
+    if event != "send_start_onboarding":
+        logger.warning(
+            "DEMO onboarding ignored unknown event: stream_id=%s event=%s",
+            stream_id,
+            event,
+        )
+        return True
+
+    try:
+        client_id = int(client_id_raw)
+    except (TypeError, ValueError):
+        logger.error(
+            "DEMO onboarding bad client_id: stream_id=%s draft_id=%s",
+            stream_id,
+            draft_id,
+        )
+        return True
+
+    if not cafe_id:
+        logger.error(
+            "DEMO onboarding empty cafe_id: stream_id=%s draft_id=%s",
+            stream_id,
+            draft_id,
+        )
+        return True
+
+    try:
+        await bot.send_message(
+            chat_id=client_id,
+            text=(
+                "✅ <b>Кафе подключено.</b>\n\n"
+                "Нажмите кнопку ниже, чтобы перейти в рабочий бот START. "
+                "Там сразу откроется админ-панель вашего кафе, а затем "
+                "будут доступны клиентская ссылка и ссылка для staff-группы."
+            ),
+            parse_mode="HTML",
+            reply_markup=kb_open_start_admin(cafe_id),
+            disable_web_page_preview=True,
+        )
+
+        logger.info(
+            "DEMO onboarding sent: stream_id=%s draft_id=%s "
+            "cafe_id=%s client_id=%s",
+            stream_id,
+            draft_id,
+            cafe_id,
+            client_id,
+        )
+        return True
+
+    except Exception:
+        logger.exception(
+            "DEMO onboarding send failed: stream_id=%s draft_id=%s "
+            "cafe_id=%s client_id=%s",
+            stream_id,
+            draft_id,
+            cafe_id,
+            client_id,
+        )
+        return False
+
+
+async def demo_onboarding_worker(bot: Bot) -> None:
+    """
+    Фоновый consumer Redis Stream.
+    Читает события из START и отправляет кнопку клиенту от DEMO.
+    """
+    logger.info("DEMO onboarding worker started")
+
+    r: Optional[redis.Redis] = None
+
+    try:
+        r = await get_redis_client()
+
+        await ensure_demo_onboarding_group(r)
+
+        while True:
+            try:
+                response = await r.xreadgroup(
+                    groupname=DEMO_ONBOARDING_GROUP,
+                    consumername=DEMO_ONBOARDING_CONSUMER,
+                    streams={DEMO_ONBOARDING_STREAM: ">"},
+                    count=10,
+                    block=DEMO_ONBOARDING_BLOCK_MS,
+                )
+
+                if not response:
+                    continue
+
+                for _, entries in response:
+                    for raw_stream_id, fields in entries:
+                        stream_id = _as_text(raw_stream_id)
+
+                        handled = await process_demo_onboarding_event(
+                            bot,
+                            r,
+                            stream_id=stream_id,
+                            fields=fields,
+                        )
+
+                        if handled:
+                            await r.xack(
+                                DEMO_ONBOARDING_STREAM,
+                                DEMO_ONBOARDING_GROUP,
+                                raw_stream_id,
+                            )
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception:
+                logger.exception("DEMO onboarding worker iteration failed")
+                await asyncio.sleep(3)
+
+    except asyncio.CancelledError:
+        raise
+
+    except Exception:
+        logger.exception("DEMO onboarding worker crashed")
+
+    finally:
+        if r:
+            try:
+                await r.aclose()
+            except Exception:
+                pass
+                
+
 # ---------------- Startup / webhook ----------------
 smart_task: Optional[asyncio.Task] = None
 subs_task: Optional[asyncio.Task] = None
 
 
 async def on_startup_bot(bot: Bot):
-    global smart_task, subs_task
+    global smart_task, subs_task, _demo_onboarding_task
 
     await sync_menu_from_redis()
 
@@ -3169,6 +3396,9 @@ async def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN not set")
         return
+    if not START_BOT_USERNAME:
+        logger.error("START_BOT_USERNAME not set")
+        return
     if not REDIS_URL:
         logger.error("REDIS_URL not set")
         return
@@ -3181,49 +3411,50 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     @dp.update.outer_middleware()
-    async def log_all_updates(handler, event, data):
+    async def log_update_type(handler, event, data):
         try:
             update = data.get("event_update")
+
             if update:
-                logger.info(f"RAW UPDATE TYPE: {update.event_type}")
                 logger.info(
-                    f"RAW UPDATE DATA: {update.model_dump_json(exclude_none=True)[:2000]}"
+                    "Telegram update received: type=%s",
+                    update.event_type,
                 )
-        except Exception as e:
-            logger.exception(f"UPDATE LOG ERROR: {e}")
+
+        except Exception:
+            logger.exception("Update metadata logging failed")
+
         return await handler(event, data)
 
     dp.include_router(router)
     dp.startup.register(on_startup_bot)
 
     @web.middleware
-    async def raw_log_middleware(request: web.Request, handler):
-        body_text = ""
+    async def safe_http_log_middleware(
+        request: web.Request,
+        handler,
+    ):
         try:
-            body_bytes = await request.read()
-            body_text = body_bytes.decode("utf-8", errors="replace")
-        except Exception as e:
-            body_text = f"<body read error: {e}>"
-
-        logger.info(
-            f"RAW HTTP {request.method} {request.path} "
-            f"content_type={request.content_type!r} "
-            f"ua={request.headers.get('User-Agent')!r} "
-            f"secret={request.headers.get('X-Telegram-Bot-Api-Secret-Token')!r}"
-        )
-        logger.info(f"RAW HTTP BODY: {body_text[:3000]}")
-
-        try:
-            if body_text:
-                request._read_bytes = body_text.encode("utf-8")
             response = await handler(request)
-            logger.info(f"RAW HTTP DONE {request.method} {request.path} status={response.status}")
+
+            logger.info(
+                "HTTP request: method=%s path=%s status=%s",
+                request.method,
+                request.path,
+                response.status,
+            )
+
             return response
-        except Exception as e:
-            logger.exception(f"RAW HTTP ERROR {request.method} {request.path}: {e}")
+
+        except Exception:
+            logger.exception(
+                "HTTP request failed: method=%s path=%s",
+                request.method,
+                request.path,
+            )
             raise
             
-    app = web.Application(middlewares=[raw_log_middleware])
+    app = web.Application(middlewares=[safe_http_log_middleware])
     app["bot"] = bot
 
     async def healthcheck(request: web.Request):
@@ -3246,25 +3477,65 @@ async def main():
     setup_application(app, dp, bot=bot)
 
     async def on_shutdown(a: web.Application):
-        global smart_task, subs_task
+        global smart_task, subs_task, _demo_onboarding_task
+
+        # Останавливаем существующий фоновый smart-цикл.
         try:
             if smart_task and not smart_task.done():
                 smart_task.cancel()
+
+                try:
+                    await smart_task
+                except asyncio.CancelledError:
+                    pass
+
+            smart_task = None
+
         except Exception:
-            pass
+            logger.exception("Failed to stop smart task")
+
+        # Останавливаем существующий цикл подписок.
         try:
             if subs_task and not subs_task.done():
                 subs_task.cancel()
+
+                try:
+                    await subs_task
+                except asyncio.CancelledError:
+                    pass
+
+            subs_task = None
+
         except Exception:
-            pass
+            logger.exception("Failed to stop subscription task")
+
+        # Останавливаем новый worker: START -> Redis Stream -> DEMO.
+        # Делать это нужно до закрытия storage и HTTP-сессии бота.
+        try:
+            if _demo_onboarding_task and not _demo_onboarding_task.done():
+                _demo_onboarding_task.cancel()
+
+                try:
+                    await _demo_onboarding_task
+                except asyncio.CancelledError:
+                    pass
+
+            _demo_onboarding_task = None
+
+        except Exception:
+            logger.exception("Failed to stop DEMO onboarding worker")
+
+        # Только после остановки всех фоновых задач закрываем FSM storage.
         try:
             await storage.close()
         except Exception:
-            pass
+            logger.exception("Failed to close FSM storage")
+
+        # В конце закрываем HTTP-сессию Telegram-бота.
         try:
             await bot.session.close()
         except Exception:
-            pass
+            logger.exception("Failed to close DEMO bot session")
 
     app.on_shutdown.append(on_shutdown)
 
