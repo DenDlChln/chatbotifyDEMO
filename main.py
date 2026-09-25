@@ -3357,12 +3357,21 @@ async def on_startup_bot(bot: Bot):
     await sync_menu_from_redis()
 
     if smart_task is None or smart_task.done():
-        smart_task = asyncio.create_task(smart_return_loop(bot))
+        smart_task = asyncio.create_task(
+            smart_return_loop(bot)
+        )
         logger.info("smart_return_loop started")
 
-    # Временно отключено: старый subs_loop читает user:* и старые поля
-    # cafebotify_paid / cafebotify_valid_until, что конфликтует с новой
-    # моделью подписок по cafe:* / admin_subscription.
+    # START -> Redis Stream -> DEMO.
+    # Запускаем ДО проверки webhook URL: при уже установленном webhook
+    # функция ниже делает return, но worker всё равно должен работать.
+    if _demo_onboarding_task is None or _demo_onboarding_task.done():
+        _demo_onboarding_task = asyncio.create_task(
+            demo_onboarding_worker(bot)
+        )
+        logger.info("DEMO onboarding worker task created")
+
+    # Временно отключено: старый subs_loop читает старую модель подписок.
     #
     # if subs_task is None or subs_task.done():
     #     subs_task = asyncio.create_task(subs_loop(bot))
@@ -3390,7 +3399,6 @@ async def on_startup_bot(bot: Bot):
 
     except Exception:
         logger.exception("Webhook setup error")
-
 
 async def main():
     if not BOT_TOKEN:
