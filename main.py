@@ -2480,9 +2480,16 @@ async def subs_loop(bot: Bot):
 
 
 # ---------------- ЮKassa HTTP ----------------
-async def create_payment(amount: str, description: str, metadata: dict) -> str:
+async def create_payment(
+    amount: str,
+    description: str,
+    metadata: dict,
+) -> str:
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
-        raise web.HTTPInternalServerError(text="Yookassa credentials not set")
+        logger.error("Yookassa credentials not set")
+        raise web.HTTPServiceUnavailable(
+            text="Оплата временно недоступна. Обратитесь в поддержку."
+        )
 
     url = "https://api.yookassa.ru/v3/payments"
     idem_key = str(uuid.uuid4())
@@ -2490,26 +2497,107 @@ async def create_payment(amount: str, description: str, metadata: dict) -> str:
     payload = {
         "amount": {"value": amount, "currency": "RUB"},
         "capture": True,
-        "confirmation": {"type": "redirect", "return_url": RETURN_URL},
+        "confirmation": {
+            "type": "redirect",
+            "return_url": RETURN_URL,
+        },
         "description": description,
         "metadata": metadata,
     }
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            url,
-            json=payload,
-            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
-            headers={"Idempotence-Key": idem_key},
-            timeout=10,
-        )
-        if resp.status_code not in (200, 201):
-            logger.error(f"Yookassa error {resp.status_code} {resp.text}")
-            raise web.HTTPInternalServerError(text="Yookassa error")
+    timeout = httpx.Timeout(
+        connect=20.0,
+        read=30.0,
+        write=15.0,
+        pool=10.0,
+    )
 
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY),
+                headers={"Idempotence-Key": idem_key},
+            )
+
+    except httpx.ConnectTimeout:
+        logger.exception(
+            "Yookassa connect timeout: host=api.yookassa.ru "
+            "idempotence_key=%s",
+            idem_key,
+        )
+        raise web.HTTPServiceUnavailable(
+            text=(
+                "Не удалось соединиться с платёжным сервисом. "
+                "Попробуйте открыть оплату позднее. "
+                "Если деньги уже списаны, не оплачивайте повторно "
+                "и обратитесь в поддержку."
+            )
+        ) from None
+
+    except httpx.TimeoutException:
+        logger.exception(
+            "Yookassa request timeout: idempotence_key=%s",
+            idem_key,
+        )
+        raise web.HTTPServiceUnavailable(
+            text=(
+                "Не удалось получить результат запроса "
+                "к платёжному сервису. "
+                "Если вы уже проводили оплату, проверьте её статус "
+                "или обратитесь в поддержку перед повторной попыткой."
+            )
+        ) from None
+
+    except httpx.RequestError:
+        logger.exception(
+            "Yookassa network error: idempotence_key=%s",
+            idem_key,
+        )
+        raise web.HTTPServiceUnavailable(
+            text=(
+                "Платёжный сервис временно недоступен. "
+                "Попробуйте позднее. Если деньги списаны, "
+                "обратитесь в поддержку."
+            )
+        ) from None
+
+    if resp.status_code not in (200, 201):
+        logger.error(
+            "Yookassa API error: status=%s idempotence_key=%s",
+            resp.status_code,
+            idem_key,
+        )
+        raise web.HTTPBadGateway(
+            text=(
+                "Не удалось создать платёж. "
+                "Попробуйте позднее или обратитесь в поддержку."
+            )
+        )
+
+    try:
         data = resp.json()
-        confirmation = data["confirmation"]["confirmation_url"]
-        return confirmation
+        confirmation_url = data["confirmation"]["confirmation_url"]
+
+        if not isinstance(confirmation_url, str) or not confirmation_url:
+            raise ValueError("Empty confirmation_url")
+
+    except (ValueError, KeyError, TypeError):
+        logger.exception(
+            "Yookassa invalid payment response: "
+            "status=%s idempotence_key=%s",
+            resp.status_code,
+            idem_key,
+        )
+        raise web.HTTPBadGateway(
+            text=(
+                "Платёжный сервис вернул неожиданный ответ. "
+                "Обратитесь в поддержку."
+            )
+        ) from None
+
+    return confirmation_url
         
         
 async def verify_yookassa_payment(payment_id: str) -> Optional[dict]:
